@@ -1,0 +1,119 @@
+<?xml version="1.0" ?>
+<sdf version="1.8">
+  <world name="airway_world">
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics" />
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands" />
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster" />
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+
+    <light type="directional" name="sun">
+      <cast_shadows>false</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision"><geometry><plane><normal>0 0 1</normal><size>10 10</size></plane></geometry></collision>
+        <visual name="visual">
+          <geometry><plane><normal>0 0 1</normal><size>10 10</size></plane></geometry>
+          <material><ambient>0.8 0.8 0.8 1</ambient><diffuse>0.8 0.8 0.8 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="bronchial_tube">
+      <static>true</static>
+
+      <link name="floor">
+        <pose>0.4 0.1 0.45 0 0 0</pose>
+        <collision name="c"><geometry><box><size>1.0 0.8 0.01</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>1.0 0.8 0.01</size></box></geometry>
+          <material><ambient>0.8 0.4 0.4 1</ambient><diffuse>0.8 0.4 0.4 1</diffuse></material>
+        </visual>
+      </link>
+      <link name="wall_left_straight">
+        <pose>0.15 0.05 0.5 0 0 0</pose>
+        <collision name="c"><geometry><box><size>0.3 0.01 0.1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.3 0.01 0.1</size></box></geometry>
+          <material><ambient>0.8 0.4 0.4 1</ambient><diffuse>0.8 0.4 0.4 1</diffuse></material>
+        </visual>
+      </link>
+      <link name="wall_right_straight">
+        <pose>0.2 -0.05 0.5 0 0 0</pose>
+        <collision name="c"><geometry><box><size>0.4 0.01 0.1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.4 0.01 0.1</size></box></geometry>
+          <material><ambient>0.8 0.4 0.4 1</ambient><diffuse>0.8 0.4 0.4 1</diffuse></material>
+        </visual>
+      </link>
+      <link name="wall_left_bend">
+        <pose>0.45 0.19 0.5 0 0 0.785</pose>
+        <collision name="c"><geometry><box><size>0.4 0.01 0.1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.4 0.01 0.1</size></box></geometry>
+          <material><ambient>0.8 0.4 0.4 1</ambient><diffuse>0.8 0.4 0.4 1</diffuse></material>
+        </visual>
+      </link>
+      <link name="wall_right_bend">
+        <pose>0.5 0.05 0.5 0 0 0.785</pose>
+        <collision name="c"><geometry><box><size>0.4 0.01 0.1</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.4 0.01 0.1</size></box></geometry>
+          <material><ambient>0.8 0.4 0.4 1</ambient><diffuse>0.8 0.4 0.4 1</diffuse></material>
+        </visual>
+      </link>
+
+      <link name="normal_carina">
+        <pose>0.40 0.07 0.5 0 0 -0.4</pose> 
+        <collision name="c">
+          <geometry><cylinder><radius>0.015</radius><length>0.1</length></cylinder></geometry>
+        </collision>
+        <visual name="v">
+          <geometry><box><size>0.08 0.015 0.1</size></box></geometry>
+          <material><ambient>0.85 0.6 0.6 1</ambient><diffuse>0.9 0.6 0.6 1</diffuse></material>
+        </visual>
+      </link>
+
+      <link name="carcinoma">
+        <pose>0.25 -0.04 0.48 0 0 0</pose> 
+        <visual name="v1">
+          <pose>0 0 0 0 0 0</pose>
+          <geometry><box><size>0.02 0.015 0.02</size></box></geometry>
+          <material><ambient>0.6 0.0 0.0 1</ambient><diffuse>0.7 0.1 0.1 1</diffuse></material>
+        </visual>
+        <visual name="v2">
+          <pose>0.005 0.005 0.005 0.2 0.5 0</pose>
+          <geometry><box><size>0.015 0.02 0.015</size></box></geometry>
+          <material><ambient>0.5 0.0 0.0 1</ambient><diffuse>0.6 0.0 0.0 1</diffuse></material>
+        </visual>
+      </link>
+
+      <link name="hemorrhage">
+        <pose>0.15 0.0 0.456 0 0 0</pose> 
+        <visual name="v">
+          <geometry><cylinder><radius>0.02</radius><length>0.002</length></cylinder></geometry>
+          <material><ambient>0.5 0.0 0.0 1</ambient><diffuse>0.6 0.0 0.0 1</diffuse></material>
+        </visual>
+      </link>
+
+      <link name="lipoma">
+        <pose>0.32 0.04 0.51 0 0 0</pose> 
+        <visual name="v"><geometry><sphere><radius>0.012</radius></sphere></geometry><material><ambient>0.8 0.8 0.2 1</ambient><diffuse>0.9 0.9 0.3 1</diffuse></material></visual>
+      </link>
+
+      <link name="foreign_body">
+        <pose>0.38 -0.02 0.46 0 1.57 0.5</pose> 
+        <visual name="v"><geometry><capsule><radius>0.005</radius><length>0.02</length></capsule></geometry><material><ambient>0.1 0.4 0.8 1</ambient><diffuse>0.2 0.5 0.9 1</diffuse></material></visual>
+      </link>
+
+      <link name="mucus_plug">
+        <pose>0.48 0.15 0.48 0 0 0</pose> 
+        <visual name="v"><geometry><ellipsoid><radii>0.015 0.02 0.01</radii></ellipsoid></geometry><material><ambient>0.3 0.6 0.2 1</ambient><diffuse>0.4 0.7 0.3 1</diffuse></material></visual>
+      </link>
+      
+    </model>
+  </world>
+</sdf>
