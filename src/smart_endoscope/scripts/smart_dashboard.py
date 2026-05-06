@@ -1,239 +1,562 @@
 #!/usr/bin/env python3
+"""
+smart_dashboard.py  –  Smart Bronchoscope ROS 2 Dashboard  (Chapter 11 edition)
+=================================================================================
+
+NEW in this version
+───────────────────
+  AUTO mode  – tick the "AUTO" checkbox and the scope navigates itself,
+               advancing forward while bending away from walls, using the
+               AutoPilot computed-torque / task-space PI controller.
+
+  Collision Guard (Manual mode) – every keyboard command is filtered by
+               CollisionGuard before being sent to Gazebo, so the tip
+               never touches a wall even under manual control.
+
+  Surgical dark theme – redesigned UI using a deep-space palette with
+               amber accent lines, monospaced telemetry, and a status
+               strip that changes colour with robot health.
+"""
+
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Image
 from std_msgs.msg import Float64MultiArray
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge
+
 import cv2
 import numpy as np
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, font as tkfont
 from PIL import Image as PILImage, ImageTk
-import threading
-from datetime import datetime
 
-class SmartEndoscopeUI(Node):
+from broncho_kinematics import BronchoKinematics
+from vision_pipeline import VisionProcessor
+from broncho_controller import (
+    CollisionGuard, AutoPilot, RobotState,
+    estimate_wall_proximity, guard_status_text, auto_status_text,
+    GUARD_WALL_THRESHOLD, AUTO_WALL_ZONE,
+)
+
+
+# ── Colour palette ────────────────────────────────────────────────────────────
+DARK_BG      = "#0a0c0f"
+PANEL_BG     = "#0f1318"
+BORDER_COL   = "#1e2530"
+AMBER        = "#e8a020"
+AMBER_BRIGHT = "#f5c040"
+CYAN_DIM     = "#2dd4bf"
+RED_ALERT    = "#ef4444"
+GREEN_OK     = "#22c55e"
+YELLOW_WARN  = "#eab308"
+TEXT_DIM     = "#4a5568"
+TEXT_MUTED   = "#718096"
+TEXT_MAIN    = "#e2e8f0"
+TEXT_BRIGHT  = "#f8fafc"
+
+STATUS_BAR_H = 28      # px
+PANEL_W      = 320     # px
+
+
+# =============================================================================
+# ROS 2 Node
+# =============================================================================
+
+class SmartDashboardNode(Node):
     def __init__(self):
-        super().__init__('smart_endoscope_ui')
-        
-        self.cmd_pub = self.create_publisher(Float64MultiArray, '/position_controller/commands', 10)
-        self.img_sub = self.create_subscription(Image, '/world/airway_world/model/bronchoscope/link/distal_tip/sensor/cmos_camera/image', self.image_callback, 10)
-        
-        self.insertion_pos = 0.0
-        self.proximal_pos = 0.0
-        self.mid_pos = 0.0
-        self.distal_pos = 0.0
-        
-        self.current_frame = np.zeros((480, 640, 3), dtype=np.uint8)
-        self.processed_frame = np.zeros((480, 640, 3), dtype=np.uint8)
-        
-        self.bg_color = "#1E1E2E"
-        self.panel_color = "#282A36"
-        self.accent_color = "#00B4D8"
-        self.text_color = "#F8F8F2"
-        
-        self.setup_ui()
+        super().__init__('smart_dashboard_node')
+        self.cmd_publisher = self.create_publisher(
+            Float64MultiArray,
+            '/position_controller/commands',
+            10,
+        )
+        self.image_subscriber = self.create_subscription(
+            Image,
+            '/world/airway_world/model/bronchoscope/link/distal_tip/sensor/cmos_camera/image',
+            self._image_cb,
+            10,
+        )
+        self.bridge       = CvBridge()
+        self.latest_frame = None
 
-    def setup_ui(self):
-        self.root = tk.Tk()
-        self.analyze_mode = tk.BooleanVar(value=False)
-        
-        self.root.title("Akatsuki Endoscopy | Clinical Interface")
-        self.root.geometry("1000x550")
-        self.root.configure(bg=self.bg_color)
-        self.root.resizable(False, False)
-        
-        vid_frame = tk.Frame(self.root, bg=self.bg_color, bd=0)
-        vid_frame.pack(side=tk.LEFT, padx=20, pady=20)
-        
-        self.video_label = tk.Label(vid_frame, bg="black", bd=2, relief="solid", highlightbackground=self.accent_color)
-        self.video_label.pack()
-        
-        control_frame = tk.Frame(self.root, bg=self.panel_color, bd=0, highlightthickness=1, highlightbackground="#444")
-        control_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=20, pady=20)
-        
-        tk.Label(control_frame, text="S Y S T E M   S T A T U S", font=("Segoe UI", 14, "bold"), fg=self.accent_color, bg=self.panel_color).pack(pady=(20, 5))
-        tk.Frame(control_frame, bg="#444", height=1).pack(fill=tk.X, padx=20, pady=5)
-        
-        tk.Label(control_frame, text="ILLUMINATION INTENSITY", font=("Segoe UI", 9, "bold"), fg="#8BE9FD", bg=self.panel_color).pack(pady=(15, 0))
-        self.light_slider = tk.Scale(control_frame, from_=0.1, to=2.5, resolution=0.1, orient=tk.HORIZONTAL, bg=self.panel_color, fg=self.text_color, bd=0, highlightthickness=0, troughcolor=self.bg_color, activebackground=self.accent_color, length=200)
-        self.light_slider.set(1.0)
-        self.light_slider.pack(pady=5)
-        
-        style = ttk.Style()
-        style.theme_use('clam')
-        style.configure("TCheckbutton", background=self.panel_color, foreground=self.text_color, font=("Segoe UI", 10))
-        ttk.Checkbutton(control_frame, text=" Enable Multi-Modal AI Detection", variable=self.analyze_mode, style="TCheckbutton").pack(pady=15)
-        
-        tk.Button(control_frame, text="CAPTURE FRAME", command=self.capture_image, bg=self.bg_color, fg=self.accent_color, font=("Segoe UI", 10, "bold"), bd=1, relief="solid", activebackground=self.accent_color, activeforeground=self.bg_color, cursor="hand2", width=20, pady=5).pack(pady=10)
-        tk.Frame(control_frame, bg="#444", height=1).pack(fill=tk.X, padx=20, pady=15)
-        
-        tk.Label(control_frame, text="KINEMATIC CONTROLS", font=("Segoe UI", 9, "bold"), fg="#8BE9FD", bg=self.panel_color).pack(pady=5)
-        nav_text = "[W] INSERT\n[S] RETRACT\n[A] CURL LEFT\n[D] CURL RIGHT"
-        tk.Label(control_frame, text=nav_text, fg="#AAAAAA", bg=self.panel_color, font=("Consolas", 10), justify=tk.LEFT).pack(pady=5)
-        
-        self.root.bind('<KeyPress>', self.handle_keypress)
-        self.update_video_feed()
+    def _image_cb(self, msg):
+        try:
+            self.latest_frame = self.bridge.imgmsg_to_cv2(msg, "bgr8")
+        except Exception as e:
+            self.get_logger().error(f"CV Bridge: {e}")
 
-    def handle_keypress(self, event):
-        key = event.keysym.lower()
-        step = 0.05
-        
-        if key == 'w': 
-            self.insertion_pos = min(self.insertion_pos + step, 1.5)
-        elif key == 's': 
-            self.insertion_pos = max(self.insertion_pos - step, -0.5)
-        elif key == 'a':
-            # Gradual Curl Math: Tip bends most, mid bends moderately, base bends slightly
-            self.distal_pos = min(self.distal_pos + step, 1.57)
-            self.mid_pos = min(self.mid_pos + (step * 0.7), 1.0)
-            self.proximal_pos = min(self.proximal_pos + (step * 0.4), 0.6)
-        elif key == 'd':
-            self.distal_pos = max(self.distal_pos - step, -1.57)
-            self.mid_pos = max(self.mid_pos - (step * 0.7), -1.0)
-            self.proximal_pos = max(self.proximal_pos - (step * 0.4), -0.6)
-            
-        msg = Float64MultiArray()
-        # MUST match the order in controllers.yaml exactly!
-        msg.data = [self.insertion_pos, self.proximal_pos, self.mid_pos, self.distal_pos]
-        self.cmd_pub.publish(msg)
+    def publish_joints(self, state: RobotState):
+        msg      = Float64MultiArray()
+        msg.data = state.as_list
+        self.cmd_publisher.publish(msg)
 
-    def image_callback(self, msg):
-        frame = np.frombuffer(msg.data, dtype=np.uint8).reshape((msg.height, msg.width, 3))
-        self.current_frame = frame.copy()
 
-    def capture_image(self):
-        filename = f"broncho_capture_{datetime.now().strftime('%H%M%S')}.png"
-        if self.analyze_mode.get():
-            save_frame = cv2.cvtColor(self.processed_frame, cv2.COLOR_RGB2BGR)
-            prefix = "[AI-PROCESSED]"
-        else:
-            save_frame = cv2.cvtColor(self.current_frame, cv2.COLOR_RGB2BGR)
-            prefix = "[RAW]"
-        cv2.imwrite(filename, save_frame)
-        print(f"{prefix} Image saved: {filename}")
+# =============================================================================
+# GUI
+# =============================================================================
 
-    def add_medical_hud(self, frame):
-        h, w = frame.shape[:2]
-        cv2.circle(frame, (w-60, 30), 6, (0, 0, 255), -1)
-        cv2.putText(frame, "REC", (w-45, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        cv2.putText(frame, f"LIVE | {timestamp}", (20, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
-        telemetry = f"INS: {self.insertion_pos:.2f}m | PROX: {self.proximal_pos:.2f}r | DIST: {self.distal_pos:.2f}r"
-        cv2.putText(frame, telemetry, (20, h-20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 180, 216), 1, cv2.LINE_AA)
-        cx, cy = int(w/2), int(h/2)
-        cv2.line(frame, (cx-10, cy), (cx+10, cy), (255, 255, 255), 1)
-        cv2.line(frame, (cx, cy-10), (cx, cy+10), (255, 255, 255), 1)
-        return frame
+class SmartDashboardGUI:
 
-    def advanced_ai_pipeline(self, frame):
-        # 1. Advanced Noise Reduction (Bilateral Filter preserves structural edges better than Median)
-        filtered = cv2.bilateralFilter(frame, 9, 75, 75)
-        
-        # 2. CLAHE Contrast Normalization
-        lab = cv2.cvtColor(filtered, cv2.COLOR_RGB2LAB)
-        l_channel, a, b = cv2.split(lab)
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
-        cl = clahe.apply(l_channel)
-        enhanced = cv2.cvtColor(cv2.merge((cl,a,b)), cv2.COLOR_LAB2RGB)
-        
-        # 3. HSV Conversion for Multi-Spectral Masking
-        hsv = cv2.cvtColor(enhanced, cv2.COLOR_RGB2HSV)
-        
-        # Define accurate Spectral Ranges for the 5 Anomaly Classes
-        m_red1 = cv2.inRange(hsv, np.array([0, 100, 40]), np.array([10, 255, 255]))
-        m_red2 = cv2.inRange(hsv, np.array([170, 100, 40]), np.array([180, 255, 255]))
-        mask_red = cv2.bitwise_or(m_red1, m_red2)
-        
-        mask_yellow = cv2.inRange(hsv, np.array([15, 80, 50]), np.array([35, 255, 255]))
-        mask_green = cv2.inRange(hsv, np.array([35, 50, 40]), np.array([85, 255, 255]))
-        mask_blue = cv2.inRange(hsv, np.array([90, 80, 40]), np.array([130, 255, 255]))
-        
-        # Low Value (Brightness) detector for Necrotic/Black masses
-        mask_dark = cv2.inRange(hsv, np.array([0, 0, 0]), np.array([180, 255, 30]))
-        
-        # Dictionary linking masks to AI labels and BGR bounding box colors
-        anomaly_classes = [
-            ("RED", mask_red, (0, 0, 255)),     
-            ("YELLOW", mask_yellow, (0, 255, 255)), 
-            ("GREEN", mask_green, (0, 255, 0)),   
-            ("BLUE", mask_blue, (255, 0, 0)),    
-            ("DARK", mask_dark, (200, 0, 200))    
+    # ── Init ─────────────────────────────────────────────────────────────────
+
+    def __init__(self, root: tk.Tk, ros_node: SmartDashboardNode):
+        self.root = root
+        self.node = ros_node
+        self.root.title("Smart Bronchoscope – ROS 2 Dashboard")
+        self.root.configure(bg=DARK_BG)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # ── Engines ──────────────────────────────────────────────────────────
+        self.kin     = BronchoKinematics(L1=0.20, L2=0.10, L3=0.05)
+        self.vision  = VisionProcessor()
+        self.guard   = CollisionGuard(self.kin)
+        self.pilot   = AutoPilot(self.kin, goal_x=1.40)
+
+        # ── Robot state ──────────────────────────────────────────────────────
+        self.state        = RobotState()
+        self.tip_position = np.zeros(3)
+        self.ellipsoids   = None
+        self.guard_dist   = 1.0
+        self.guard_normal = np.array([0.0, 1.0])
+        self.guard_margin = 1.0
+
+        # ── Tkinter vars ─────────────────────────────────────────────────────
+        self.auto_enabled = tk.BooleanVar(value=False)
+        self.ai_enabled   = tk.BooleanVar(value=False)
+        self.light_val    = tk.DoubleVar(value=1.0)
+
+        self._build_ui()
+        self.root.bind('<KeyPress>', self._on_key)
+        self._update_loop()
+
+    # ── UI Construction ───────────────────────────────────────────────────────
+
+    def _build_ui(self):
+        # ── Root grid ────────────────────────────────────────────────────────
+        self.root.columnconfigure(0, weight=1)
+        self.root.columnconfigure(1, minsize=PANEL_W, weight=0)
+        self.root.rowconfigure(0, weight=1)
+        self.root.rowconfigure(1, minsize=STATUS_BAR_H, weight=0)
+
+        # ── Camera canvas ────────────────────────────────────────────────────
+        cam_frame = tk.Frame(self.root, bg=DARK_BG, bd=0)
+        cam_frame.grid(row=0, column=0, sticky="nsew", padx=(8, 4), pady=(8, 4))
+        self.canvas = tk.Canvas(
+            cam_frame, width=640, height=480,
+            bg="#000000", highlightthickness=1,
+            highlightbackground=BORDER_COL,
+        )
+        self.canvas.pack(fill="both", expand=True)
+
+        # ── Right control panel ───────────────────────────────────────────────
+        panel = tk.Frame(
+            self.root, bg=PANEL_BG, bd=0, width=PANEL_W,
+        )
+        panel.grid(row=0, column=1, sticky="nsew", padx=(4, 8), pady=(8, 4))
+        panel.grid_propagate(False)
+        self._build_panel(panel)
+
+        # ── Status bar ───────────────────────────────────────────────────────
+        self.status_bar = tk.Label(
+            self.root,
+            text=" SYSTEM READY",
+            bg=PANEL_BG, fg=CYAN_DIM,
+            font=("Courier", 10),
+            anchor="w", padx=12,
+        )
+        self.status_bar.grid(row=1, column=0, columnspan=2,
+                             sticky="ew", ipady=4)
+
+    def _build_panel(self, parent):
+        pad = dict(padx=16)  # only padx here; pady is always passed explicitly
+
+        # ── Title ─────────────────────────────────────────────────────────────
+        tk.Label(
+            parent, text="BRONCHOSCOPE", bg=PANEL_BG, fg=AMBER,
+            font=("Courier", 15, "bold"),
+        ).pack(pady=(18, 0))
+        tk.Label(
+            parent, text="ROS 2  /  CHAPTER 11 CONTROL", bg=PANEL_BG,
+            fg=TEXT_DIM, font=("Courier", 8),
+        ).pack(pady=(0, 14))
+
+        self._separator(parent)
+
+        # ── Mode toggles ──────────────────────────────────────────────────────
+        mode_frame = tk.Frame(parent, bg=PANEL_BG)
+        mode_frame.pack(fill="x", **pad, pady=(10, 6))
+
+        self._toggle(mode_frame, "⚙  AUTO NAVIGATE",
+                     self.auto_enabled, AMBER, self._on_auto_toggle,
+                     side="left")
+        self._toggle(mode_frame, "🧠  AI VISION",
+                     self.ai_enabled, CYAN_DIM, None,
+                     side="right")
+
+        self._separator(parent)
+
+        # ── Light slider ──────────────────────────────────────────────────────
+        tk.Label(parent, text="LIGHT INTENSITY", bg=PANEL_BG,
+                 fg=TEXT_MUTED, font=("Courier", 8)).pack(**pad, pady=(10, 2))
+
+        slider_frame = tk.Frame(parent, bg=PANEL_BG)
+        slider_frame.pack(fill="x", **pad, pady=(0, 6))
+        self.light_slider = tk.Scale(
+            slider_frame, variable=self.light_val,
+            from_=0.1, to=2.5, resolution=0.05, orient="horizontal",
+            bg=PANEL_BG, fg=AMBER, troughcolor=BORDER_COL,
+            highlightthickness=0, bd=0, showvalue=False,
+            activebackground=AMBER_BRIGHT,
+        )
+        self.light_slider.pack(fill="x")
+
+        self._separator(parent)
+
+        # ── Controls legend ───────────────────────────────────────────────────
+        tk.Label(parent, text="KEYBOARD", bg=PANEL_BG,
+                 fg=TEXT_MUTED, font=("Courier", 8)).pack(**pad, pady=(10, 4))
+        legend = [
+            ("W / S", "Insert  /  Retract"),
+            ("A / D", "Curl Left  /  Right"),
+            ("T",     "Run IK to Target"),
+            ("AUTO",  "Autonomous forward drive"),
         ]
-        
-        kernel = np.ones((5,5), np.uint8)
-        
-        # 4. Feature Extraction & Expert Logic System
-        for color_name, raw_mask, box_color in anomaly_classes:
-            # Clean acoustic noise from the mask
-            clean_mask = cv2.morphologyEx(raw_mask, cv2.MORPH_OPEN, kernel)
-            contours, _ = cv2.findContours(clean_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            for cnt in contours:
-                area = cv2.contourArea(cnt)
-                if area > 100: # Size Threshold
-                    
-                    # Mathematical Shape Extraction
-                    perimeter = cv2.arcLength(cnt, True)
-                    circularity = 4 * np.pi * (area / (perimeter * perimeter)) if perimeter > 0 else 0
-                    hull = cv2.convexHull(cnt)
-                    hull_area = cv2.contourArea(hull)
-                    solidity = float(area)/hull_area if hull_area > 0 else 0
-                    x, y, w, h = cv2.boundingRect(cnt)
-                    
-                    label = "UNKNOWN ANOMALY"
-                    
-                    # Logic Classification Network
-                    if color_name == "RED":
-                        if solidity > 0.85:
-                            label = f"HEMORRHAGE (Sol:{solidity:.2f})"
-                        else:
-                            label = f"CARCINOMA (Sol:{solidity:.2f})"
-                    elif color_name == "YELLOW":
-                        label = f"LIPOMA (Circ:{circularity:.2f})"
-                    elif color_name == "GREEN":
-                        label = f"MUCUS PLUG (Area:{area})"
-                    elif color_name == "BLUE":
-                        label = f"FOREIGN BODY (Capsule)"
-                    elif color_name == "DARK":
-                        label = f"NECROTIC MASS (Low Val)"
+        for key, desc in legend:
+            row = tk.Frame(parent, bg=PANEL_BG)
+            row.pack(fill="x", padx=16, pady=1)
+            tk.Label(row, text=key, bg=PANEL_BG, fg=AMBER,
+                     font=("Courier", 9, "bold"), width=6, anchor="w").pack(side="left")
+            tk.Label(row, text=desc, bg=PANEL_BG, fg=TEXT_MUTED,
+                     font=("Courier", 9), anchor="w").pack(side="left")
 
-                    # Draw Classification UI
-                    cv2.rectangle(frame, (x, y), (x+w, y+h), box_color, 2)
-                    cv2.putText(frame, label, (x, y-8), cv2.FONT_HERSHEY_SIMPLEX, 0.45, box_color, 1, cv2.LINE_AA)
-                    
-                    # Draw Convex Hull to show the shape segmentation
-                    cv2.drawContours(frame, [hull], -1, (255,255,255), 1)
+        self._separator(parent)
+
+        # ── Telemetry readout ─────────────────────────────────────────────────
+        tk.Label(parent, text="TIP POSITION  (m)", bg=PANEL_BG,
+                 fg=TEXT_MUTED, font=("Courier", 8)).pack(**pad, pady=(10, 2))
+        self.pos_label = tk.Label(
+            parent, text="X: 0.000   Y: 0.000   Z: 0.000",
+            bg=PANEL_BG, fg=AMBER_BRIGHT, font=("Courier", 12, "bold"),
+        )
+        self.pos_label.pack(**pad, pady=(0, 8))
+
+        # Joints
+        tk.Label(parent, text="JOINT STATE", bg=PANEL_BG,
+                 fg=TEXT_MUTED, font=("Courier", 8)).pack(**pad, pady=(4, 2))
+        self.joint_label = tk.Label(
+            parent, text="INS 0.000  P 0.000  M 0.000  D 0.000",
+            bg=PANEL_BG, fg=TEXT_MAIN, font=("Courier", 10),
+        )
+        self.joint_label.pack(**pad, pady=(0, 6))
+
+        # Manipulability
+        tk.Label(parent, text="MANIPULABILITY", bg=PANEL_BG,
+                 fg=TEXT_MUTED, font=("Courier", 8)).pack(**pad, pady=(4, 2))
+        self.manip_label = tk.Label(
+            parent, text="VOL – – –   COND – – –",
+            bg=PANEL_BG, fg=TEXT_MAIN, font=("Courier", 10),
+        )
+        self.manip_label.pack(**pad, pady=(0, 6))
+
+        self._separator(parent)
+
+        # Guard & auto status
+        self.guard_label = tk.Label(
+            parent, text="GUARD  –",
+            bg=PANEL_BG, fg=GREEN_OK, font=("Courier", 9),
+            wraplength=280, justify="left",
+        )
+        self.guard_label.pack(**pad, pady=(8, 4))
+
+        self.auto_label = tk.Label(
+            parent, text="AUTO  –",
+            bg=PANEL_BG, fg=TEXT_DIM, font=("Courier", 9),
+        )
+        self.auto_label.pack(**pad, pady=(0, 12))
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _separator(self, parent):
+        tk.Frame(parent, bg=BORDER_COL, height=1).pack(
+            fill="x", padx=10, pady=4,
+        )
+
+    def _toggle(self, parent, text, var, color, cmd, side):
+        cb = tk.Checkbutton(
+            parent, text=text, variable=var,
+            bg=PANEL_BG, fg=color, selectcolor=DARK_BG,
+            activebackground=PANEL_BG, activeforeground=color,
+            font=("Courier", 9, "bold"),
+            command=cmd,
+        )
+        cb.pack(side=side)
+
+    # ── Event callbacks ────────────────────────────────────────────────────────
+
+    def _on_auto_toggle(self):
+        if self.auto_enabled.get():
+            self.pilot.reset(goal_x=1.40)
+            self.guard.reset()
+            print("[AUTO] Autopilot engaged – scope will advance autonomously.")
+        else:
+            print("[AUTO] Autopilot disengaged – returning to manual control.")
+
+    def _on_key(self, event):
+        """Handle keyboard input in MANUAL mode only."""
+        if self.auto_enabled.get():
+            return  # keyboard locked while AUTO is running
+
+        key = event.char.lower()
+        s   = self.state
+
+        delta_ins = delta_prox = delta_mid = delta_dis = 0.0
+
+        if key == 'w':
+            delta_ins = +0.01
+        elif key == 's':
+            delta_ins = -0.01
+        elif key == 'd':
+            delta_dis  = -0.05
+            delta_mid  = -0.05 * 0.70
+            delta_prox = -0.05 * 0.40
+        elif key == 'a':
+            delta_dis  = +0.05
+            delta_mid  = +0.05 * 0.70
+            delta_prox = +0.05 * 0.40
+        elif key == 't':
+            self._run_ik()
+            return
+        else:
+            return
+
+        # ── Collision Guard filters the command (Chapter 11 §11.3.3) ──────────
+        frame = self.node.latest_frame
+        new_state = self.guard.filter_command(
+            s,
+            delta_ins, delta_prox, delta_mid, delta_dis,
+            frame=frame,
+        )
+
+        self.state = new_state
+        self._update_kinematics()
+        self.node.publish_joints(self.state)
+
+    def _run_ik(self):
+        """Chapter 6 IK to a hard-coded target (keyboard 'T')."""
+        T_sd = np.array([
+            [ 0.877, -0.479, 0.0, 0.800],
+            [ 0.479,  0.877, 0.0, 0.150],
+            [ 0.0,    0.0,   1.0, 0.000],
+            [ 0.0,    0.0,   0.0, 1.000],
+        ])
+        new_theta, converged = self.kin.ik_body(
+            T_sd, self.state.as_list
+        )
+        if converged:
+            self.state = RobotState(*new_theta).clipped()
+            print(f"[IK] Converged  → {new_theta}")
+        else:
+            print("[IK] Failed to converge – target may be out of reach.")
+        self._update_kinematics()
+        self.node.publish_joints(self.state)
+
+    # ── Kinematics update ─────────────────────────────────────────────────────
+
+    def _update_kinematics(self):
+        th = self.state.as_list
+        T1 = self.kin.matrix_exp_6(self.kin.S1, th[0])
+        T2 = self.kin.matrix_exp_6(self.kin.S2, th[1])
+        T3 = self.kin.matrix_exp_6(self.kin.S3, th[2])
+        T4 = self.kin.matrix_exp_6(self.kin.S4, th[3])
+        T_final = np.dot(np.dot(np.dot(T1, T2), T3), T4).dot(self.kin.M)
+
+        self.tip_position = T_final[:3, 3]
+        Js = self.kin.jacobian_space(th)
+        self.ellipsoids   = self.kin.ellipsoid_analysis(Js)
+
+        # Update telemetry labels
+        p = self.tip_position
+        self.pos_label.config(
+            text=f"X: {p[0]:+.3f}   Y: {p[1]:+.3f}   Z: {p[2]:+.3f}"
+        )
+        s = self.state
+        self.joint_label.config(
+            text=f"INS {s.insertion:+.3f}  P {s.proximal:+.3f}  "
+                 f"M {s.mid:+.3f}  D {s.distal:+.3f}"
+        )
+        el = self.ellipsoids
+        vol  = el['linear']['mu3']
+        cond = el['linear']['mu1']
+        cond_str = "SING" if cond == float('inf') else f"{cond:.2f}"
+        self.manip_label.config(
+            text=f"VOL {vol:.4f}   COND {cond_str}",
+            fg=RED_ALERT if cond == float('inf') else TEXT_MAIN,
+        )
+
+    # ── HUD overlay on camera frame ───────────────────────────────────────────
+
+    def _draw_hud(self, frame: np.ndarray) -> np.ndarray:
+        h, w = frame.shape[:2]
+        cx, cy = w // 2, h // 2
+
+        # Crosshair
+        cv2.line(frame, (cx - 22, cy), (cx + 22, cy), (0, 210, 80), 1)
+        cv2.line(frame, (cx, cy - 22), (cx, cy + 22), (0, 210, 80), 1)
+        cv2.circle(frame, (cx, cy), 5, (0, 210, 80), 1)
+
+        # Corner reticle brackets
+        blen, boff = 18, 3
+        for sx, sy in [(-1, -1), (1, -1), (-1, 1), (1, 1)]:
+            ox = cx + sx * (w // 4)
+            oy = cy + sy * (h // 4)
+            cv2.line(frame, (ox, oy), (ox + sx * blen, oy), (50, 180, 255), 1)
+            cv2.line(frame, (ox, oy), (ox, oy + sy * blen), (50, 180, 255), 1)
+
+        # Bottom telemetry bar
+        s   = self.state
+        el  = self.ellipsoids
+        if el:
+            vol  = el['linear']['mu3']
+            cond = el['linear']['mu1']
+            cond_str = "SING!" if cond == float('inf') else f"{cond:.2f}"
+            singular = (cond == float('inf'))
+        else:
+            vol, cond_str, singular = 0.0, "N/A", False
+
+        mode_str = "AUTO" if self.auto_enabled.get() else "MANU"
+        tele = (
+            f"{mode_str} | "
+            f"INS {s.insertion:+.3f}m  "
+            f"P={s.proximal:+.4f}  M={s.mid:+.4f}  D={s.distal:+.4f}  |  "
+            f"VOL {vol:.4f}  COND {cond_str}"
+        )
+
+        bar_y = h - STATUS_BAR_H
+        cv2.rectangle(frame, (0, bar_y), (w, h), (10, 14, 20), -1)
+        text_col = (0, 80, 240) if singular else (20, 220, 140)
+        cv2.putText(frame, tele, (8, h - 9),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, text_col, 1,
+                    cv2.LINE_AA)
+
+        # Guard distance bar (left edge)
+        dist = self.guard_dist
+        bar_frac = np.clip(dist / 0.5, 0.0, 1.0)
+        bar_full  = h - STATUS_BAR_H - 10
+        bar_pix   = int(bar_frac * bar_full)
+        bar_col   = (0, 220, 80) if dist >= GUARD_WALL_THRESHOLD else (
+                    (0, 200, 255) if dist >= GUARD_WALL_THRESHOLD * 0.5
+                    else (0, 60, 255))
+        cv2.rectangle(frame, (4, h - STATUS_BAR_H - 10 - bar_pix),
+                      (10, h - STATUS_BAR_H - 10), bar_col, -1)
+        cv2.rectangle(frame, (4, 10), (10, h - STATUS_BAR_H - 10),
+                      (30, 40, 50), 1)
+        cv2.putText(frame, "GRD", (2, h - STATUS_BAR_H - 14),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.30, (80, 80, 80), 1)
+
+        # AUTO goal progress bar (right edge)
+        if self.auto_enabled.get():
+            progress = np.clip(s.insertion / self.pilot.goal_x, 0.0, 1.0)
+            prog_pix = int(progress * bar_full)
+            cv2.rectangle(frame,
+                          (w - 10, h - STATUS_BAR_H - 10 - prog_pix),
+                          (w - 4,  h - STATUS_BAR_H - 10),
+                          (20, 160, 255), -1)
+            cv2.rectangle(frame, (w - 10, 10), (w - 4, h - STATUS_BAR_H - 10),
+                          (30, 40, 50), 1)
+            cv2.putText(frame, "FWD", (w - 13, h - STATUS_BAR_H - 14),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.30, (80, 80, 80), 1)
 
         return frame
 
-    def process_pipeline(self, frame):
-        alpha = self.light_slider.get()
-        frame = cv2.convertScaleAbs(frame, alpha=alpha, beta=0)
-        
-        if self.analyze_mode.get():
-            frame = self.advanced_ai_pipeline(frame)
-            
-        frame = self.add_medical_hud(frame)
-        return frame
+    # ── Main update loop ──────────────────────────────────────────────────────
 
-    def update_video_feed(self):
-        processed = self.process_pipeline(self.current_frame)
-        self.processed_frame = processed.copy()
-        
-        img = PILImage.fromarray(processed)
-        imgtk = ImageTk.PhotoImage(image=img)
-        self.video_label.imgtk = imgtk
-        self.video_label.configure(image=imgtk)
-        
-        self.root.after(30, self.update_video_feed)
+    def _update_loop(self):
+        # 1. Spin ROS
+        rclpy.spin_once(self.node, timeout_sec=0.01)
+
+        frame = self.node.latest_frame
+
+        # 2. Proximity sensing (used by both guard and auto)
+        if frame is not None:
+            dist, normal, margin = estimate_wall_proximity(
+                frame, self.tip_position[:2]
+            )
+            self.guard_dist   = dist
+            self.guard_normal = normal
+            self.guard_margin = margin
+
+        # 3. AUTO PILOT step
+        if self.auto_enabled.get() and not self.pilot.is_done:
+            self.state = self.pilot.step(self.state, frame=frame)
+            self._update_kinematics()
+            self.node.publish_joints(self.state)
+
+        # 4. Guard & auto status labels
+        self.guard_label.config(
+            text=guard_status_text(self.guard_dist, self.guard_margin),
+            fg=(RED_ALERT if self.guard_dist < GUARD_WALL_THRESHOLD * 0.5
+                else YELLOW_WARN if self.guard_dist < GUARD_WALL_THRESHOLD
+                else GREEN_OK),
+        )
+        auto_txt = (auto_status_text(self.pilot, self.state)
+                    if self.auto_enabled.get() else "AUTO  –")
+        auto_col = (AMBER if self.auto_enabled.get() else TEXT_DIM)
+        self.auto_label.config(text=auto_txt, fg=auto_col)
+
+        # 5. Render frame
+        if frame is not None:
+            frame = cv2.convertScaleAbs(
+                frame, alpha=self.light_val.get(), beta=0
+            )
+            if self.ai_enabled.get():
+                frame = self.vision.process_frame(frame)
+            frame = self._draw_hud(frame)
+
+            rgb   = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            img   = PILImage.fromarray(rgb)
+            imgtk = ImageTk.PhotoImage(image=img)
+            self.canvas.create_image(0, 0, anchor="nw", image=imgtk)
+            self.canvas.imgtk = imgtk  # keep reference
+
+        # 6. Status bar
+        mode    = "AUTO" if self.auto_enabled.get() else "MANUAL"
+        ai_str  = "AI ON" if self.ai_enabled.get() else "AI OFF"
+        sb_col  = AMBER if self.auto_enabled.get() else CYAN_DIM
+        self.status_bar.config(
+            text=f"  MODE: {mode}  |  {ai_str}  |  "
+                 f"GUARD dist={self.guard_dist:.3f}m  |  "
+                 f"TIP X={self.tip_position[0]:.3f}m",
+            fg=sb_col,
+        )
+
+        # Re-schedule: ~30 fps in manual, ~15 fps in auto (heavier computation)
+        delay = 66 if self.auto_enabled.get() else 33
+        self.root.after(delay, self._update_loop)
+
+    # ── Teardown ──────────────────────────────────────────────────────────────
+
+    def _on_close(self):
+        self.node.destroy_node()
+        rclpy.shutdown()
+        self.root.destroy()
+
+
+# =============================================================================
+# Entry point
+# =============================================================================
 
 def main(args=None):
     rclpy.init(args=args)
-    ui_node = SmartEndoscopeUI()
-    spin_thread = threading.Thread(target=rclpy.spin, args=(ui_node,), daemon=True)
-    spin_thread.start()
-    ui_node.root.mainloop()
-    rclpy.shutdown()
+
+    ros_node = SmartDashboardNode()
+    root     = tk.Tk()
+    root.resizable(True, True)
+
+    SmartDashboardGUI(root, ros_node)
+
+    root.focus_set()
+    root.mainloop()
+
 
 if __name__ == '__main__':
     main()
