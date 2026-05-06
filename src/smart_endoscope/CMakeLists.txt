@@ -31,6 +31,9 @@ install(DIRECTORY
 )
 install(PROGRAMS
   scripts/smart_dashboard.py
+  scripts/broncho_kinematics.py
+  scripts/vision_pipeline.py
+  scripts/broncho_controller.py
   DESTINATION lib/${PROJECT_NAME}
 )
 ament_package()
