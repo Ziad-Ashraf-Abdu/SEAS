@@ -1,7 +1,3 @@
-Here is a comprehensive, professional, and visually structured `README.md` perfectly tailored for your GitHub repository. It highlights the rigorous academic theory, the advanced control systems, and the clinical AI pipeline you've built. 
-
-***
-
 # 🫁 Smart Bronchoscope
 
 ![ROS 2](https://img.shields.io/badge/ROS_2-Humble%2FJazzy-blue?logo=ros)
