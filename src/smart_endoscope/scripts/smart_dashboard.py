@@ -124,6 +124,7 @@ class SmartDashboardGUI:
         self.auto_enabled = tk.BooleanVar(value=False)
         self.ai_enabled   = tk.BooleanVar(value=False)
         self.light_val    = tk.DoubleVar(value=1.0)
+        self.target_x_val = tk.DoubleVar(value=1.0)
 
         self._build_ui()
         self.root.bind('<KeyPress>', self._on_key)
@@ -195,6 +196,23 @@ class SmartDashboardGUI:
 
         self._separator(parent)
 
+        tk.Label(parent, text="AUTO TARGET DEPTH (m)", bg=PANEL_BG,
+                 fg=TEXT_MUTED, font=("Courier", 8)).pack(**pad, pady=(10, 2))
+
+        target_frame = tk.Frame(parent, bg=PANEL_BG)
+        target_frame.pack(fill="x", **pad, pady=(0, 6))
+        self.target_slider = tk.Scale(
+            target_frame, variable=self.target_x_val,
+            # SAFE BOUNDARIES: 0.1m minimum, 0.5m maximum
+            from_=0.1, to=0.5, resolution=0.01, orient="horizontal",
+            bg=PANEL_BG, fg=CYAN_DIM, troughcolor=BORDER_COL,
+            highlightthickness=0, bd=0, showvalue=True,
+            activebackground=CYAN_DIM,
+        )
+        self.target_slider.pack(fill="x")
+
+        self._separator(parent)
+
         # ── Light slider ──────────────────────────────────────────────────────
         tk.Label(parent, text="LIGHT INTENSITY", bg=PANEL_BG,
                  fg=TEXT_MUTED, font=("Courier", 8)).pack(**pad, pady=(10, 2))
@@ -216,10 +234,11 @@ class SmartDashboardGUI:
         tk.Label(parent, text="KEYBOARD", bg=PANEL_BG,
                  fg=TEXT_MUTED, font=("Courier", 8)).pack(**pad, pady=(10, 4))
         legend = [
-            ("W / S", "Insert  /  Retract"),
-            ("A / D", "Curl Left  /  Right"),
-            ("T",     "Run IK to Target"),
-            ("AUTO",  "Autonomous forward drive"),
+            ("W / S", "Insert / Retract"),
+            ("A / D", "Yaw (Left/Right)"),
+            ("R / F", "Pitch (Up/Down)"),
+            ("Q / E", "Roll Tip (Twist)"),
+            ("AUTO",  "Autonomous drive"),
         ]
         for key, desc in legend:
             row = tk.Frame(parent, bg=PANEL_BG)
@@ -295,49 +314,50 @@ class SmartDashboardGUI:
 
     def _on_auto_toggle(self):
         if self.auto_enabled.get():
-            self.pilot.reset(goal_x=1.40)
+            # Fetch the user's requested depth from the slider
+            user_target = self.target_x_val.get()
+            
+            # Pass it directly to the AutoPilot
+            self.pilot.reset(goal_x=user_target)
             self.guard.reset()
-            print("[AUTO] Autopilot engaged – scope will advance autonomously.")
+            print(f"[AUTO] Autopilot engaged – advancing to {user_target:.2f}m.")
         else:
             print("[AUTO] Autopilot disengaged – returning to manual control.")
 
     def _on_key(self, event):
-        """Handle keyboard input in MANUAL mode only."""
-        if self.auto_enabled.get():
-            return  # keyboard locked while AUTO is running
-
+        """Handle keyboard input for 7-DOF."""
+        if self.auto_enabled.get(): return 
         key = event.char.lower()
-        s   = self.state
+        
+        d_theta = [0.0] * 7 
 
-        delta_ins = delta_prox = delta_mid = delta_dis = 0.0
-
-        if key == 'w':
-            delta_ins = +0.01
-        elif key == 's':
-            delta_ins = -0.01
-        elif key == 'd':
-            delta_dis  = -0.05
-            delta_mid  = -0.05 * 0.70
-            delta_prox = -0.05 * 0.40
-        elif key == 'a':
-            delta_dis  = +0.05
-            delta_mid  = +0.05 * 0.70
-            delta_prox = +0.05 * 0.40
+        # Lowered insertion speed
+        if key == 'w': d_theta[0] = +0.005
+        elif key == 's': d_theta[0] = -0.005
+        
+        # Yaw (Left/Right) - Reduced by half
+        elif key == 'a': 
+            d_theta[1], d_theta[3], d_theta[5] = 0.01, 0.015, 0.025
+        elif key == 'd': 
+            d_theta[1], d_theta[3], d_theta[5] = -0.01, -0.015, -0.025
+            
+        # Pitch (Up/Down) - Reduced by half
+        elif key == 'r': 
+            d_theta[2], d_theta[4] = 0.015, 0.025
+        elif key == 'f': 
+            d_theta[2], d_theta[4] = -0.015, -0.025
+            
+        # Distal Roll (Twist Tip)
+        elif key == 'q': d_theta[6] = +0.03
+        elif key == 'e': d_theta[6] = -0.03
+        
         elif key == 't':
             self._run_ik()
             return
-        else:
-            return
+        else: return
 
-        # ── Collision Guard filters the command (Chapter 11 §11.3.3) ──────────
         frame = self.node.latest_frame
-        new_state = self.guard.filter_command(
-            s,
-            delta_ins, delta_prox, delta_mid, delta_dis,
-            frame=frame,
-        )
-
-        self.state = new_state
+        self.state = self.guard.filter_command(self.state, d_theta, frame=frame)
         self._update_kinematics()
         self.node.publish_joints(self.state)
 
@@ -349,14 +369,13 @@ class SmartDashboardGUI:
             [ 0.0,    0.0,   1.0, 0.000],
             [ 0.0,    0.0,   0.0, 1.000],
         ])
-        new_theta, converged = self.kin.ik_body(
-            T_sd, self.state.as_list
-        )
+        # Pass the 7-element list as the guess
+        new_theta, converged = self.kin.ik_body(T_sd, self.state.as_list)
         if converged:
             self.state = RobotState(*new_theta).clipped()
             print(f"[IK] Converged  → {new_theta}")
         else:
-            print("[IK] Failed to converge – target may be out of reach.")
+            print("[IK] Failed to converge.")
         self._update_kinematics()
         self.node.publish_joints(self.state)
 
@@ -381,8 +400,8 @@ class SmartDashboardGUI:
         )
         s = self.state
         self.joint_label.config(
-            text=f"INS {s.insertion:+.3f}  P {s.proximal:+.3f}  "
-                 f"M {s.mid:+.3f}  D {s.distal:+.3f}"
+            text=f"I {s.insertion:+.2f} | P y{s.prox_yaw:+.2f} p{s.prox_pitch:+.2f} | "
+                 f"M y{s.mid_yaw:+.2f} p{s.mid_pitch:+.2f} | D y{s.dist_yaw:+.2f} r{s.dist_roll:+.2f}"
         )
         el = self.ellipsoids
         vol  = el['linear']['mu3']
@@ -426,9 +445,11 @@ class SmartDashboardGUI:
         mode_str = "AUTO" if self.auto_enabled.get() else "MANU"
         tele = (
             f"{mode_str} | "
-            f"INS {s.insertion:+.3f}m  "
-            f"P={s.proximal:+.4f}  M={s.mid:+.4f}  D={s.distal:+.4f}  |  "
-            f"VOL {vol:.4f}  COND {cond_str}"
+            f"INS {s.insertion:+.2f}m | "
+            f"P(y{s.prox_yaw:+.2f},p{s.prox_pitch:+.2f}) "
+            f"M(y{s.mid_yaw:+.2f},p{s.mid_pitch:+.2f}) "
+            f"D(y{s.dist_yaw:+.2f},r{s.dist_roll:+.2f}) | "
+            f"V {vol:.3f} C {cond_str}"
         )
 
         bar_y = h - STATUS_BAR_H
@@ -460,7 +481,7 @@ class SmartDashboardGUI:
             cv2.rectangle(frame,
                           (w - 10, h - STATUS_BAR_H - 10 - prog_pix),
                           (w - 4,  h - STATUS_BAR_H - 10),
-                          (20, 160, 255), -1)
+                          (20, 160, 255), -1)   
             cv2.rectangle(frame, (w - 10, 10), (w - 4, h - STATUS_BAR_H - 10),
                           (30, 40, 50), 1)
             cv2.putText(frame, "FWD", (w - 13, h - STATUS_BAR_H - 14),

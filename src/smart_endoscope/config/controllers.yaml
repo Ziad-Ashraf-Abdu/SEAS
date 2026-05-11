@@ -13,7 +13,10 @@ position_controller:
   ros__parameters:
     joints:
       - insertion_joint
-      - proximal_joint
-      - mid_joint
-      - distal_joint
+      - proximal_yaw_joint
+      - proximal_pitch_joint
+      - mid_yaw_joint
+      - mid_pitch_joint
+      - distal_yaw_joint
+      - distal_roll_joint
     interface_name: position

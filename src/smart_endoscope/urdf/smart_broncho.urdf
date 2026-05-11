@@ -34,79 +34,146 @@
   </link>
   <gazebo reference="base_link"><material>Gazebo/Grey</material><mu1>0.0</mu1><mu2>0.0</mu2></gazebo>
 
-  <joint name="proximal_joint" type="revolute">
+  <joint name="proximal_yaw_joint" type="revolute">
     <parent link="base_link"/>
-    <child link="mid_link1"/>
+    <child link="link_1"/>
     <origin xyz="0 0 0" rpy="0 0 0"/> 
     <axis xyz="0 0 1"/> 
     <limit lower="-0.6" upper="0.6" effort="100.0" velocity="1.0"/>
   </joint>
 
-  <link name="mid_link1">
+  <link name="link_1">
     <visual>
-      <origin xyz="0.1 0 0" rpy="0 1.5708 0"/>
-      <geometry><cylinder radius="0.014" length="0.2"/></geometry>
+      <origin xyz="0.05 0 0" rpy="0 1.5708 0"/>
+      <geometry><cylinder radius="0.014" length="0.1"/></geometry>
       <material name="dark_gray"><color rgba="0.5 0.5 0.5 1.0"/></material>
     </visual>
     <collision>
-      <origin xyz="0.1 0 0" rpy="0 1.5708 0"/>
-      <geometry><cylinder radius="0.014" length="0.2"/></geometry>
+      <origin xyz="0.05 0 0" rpy="0 1.5708 0"/>
+      <geometry><cylinder radius="0.014" length="0.1"/></geometry>
     </collision>
-    <inertial><mass value="1.0"/><inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/></inertial>
+    <inertial><mass value="0.2"/><inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/></inertial>
   </link>
-  <gazebo reference="mid_link1"><material>Gazebo/DarkGrey</material><mu1>0.0</mu1><mu2>0.0</mu2></gazebo>
+  <gazebo reference="link_1"><material>Gazebo/DarkGrey</material><mu1>0.0</mu1><mu2>0.0</mu2></gazebo>
 
-  <joint name="mid_joint" type="revolute">
-    <parent link="mid_link1"/>
-    <child link="mid_link2"/>
-    <origin xyz="0.2 0 0" rpy="0 0 0"/> 
+  <joint name="proximal_pitch_joint" type="revolute">
+    <parent link="link_1"/>
+    <child link="link_2"/>
+    <origin xyz="0.1 0 0" rpy="0 0 0"/> 
+    <axis xyz="0 1 0"/> 
+    <limit lower="-0.6" upper="0.6" effort="100.0" velocity="1.0"/>
+  </joint>
+
+  <link name="link_2">
+    <visual>
+      <origin xyz="0.05 0 0" rpy="0 1.5708 0"/>
+      <geometry><cylinder radius="0.013" length="0.1"/></geometry>
+      <material name="gray"><color rgba="0.6 0.6 0.6 1.0"/></material>
+    </visual>
+    <collision>
+      <origin xyz="0.05 0 0" rpy="0 1.5708 0"/>
+      <geometry><cylinder radius="0.013" length="0.1"/></geometry>
+    </collision>
+    <inertial><mass value="0.2"/><inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/></inertial>
+  </link>
+  <gazebo reference="link_2"><material>Gazebo/Grey</material><mu1>0.0</mu1><mu2>0.0</mu2></gazebo>
+
+  <joint name="mid_yaw_joint" type="revolute">
+    <parent link="link_2"/>
+    <child link="link_3"/>
+    <origin xyz="0.1 0 0" rpy="0 0 0"/> 
     <axis xyz="0 0 1"/> 
     <limit lower="-1.0" upper="1.0" effort="100.0" velocity="1.0"/>
   </joint>
 
-  <link name="mid_link2">
+  <link name="link_3">
     <visual>
-      <origin xyz="0.075 0 0" rpy="0 1.5708 0"/>
-      <geometry><cylinder radius="0.013" length="0.15"/></geometry>
+      <origin xyz="0.05 0 0" rpy="0 1.5708 0"/>
+      <geometry><cylinder radius="0.013" length="0.1"/></geometry>
+      <material name="dark_gray"><color rgba="0.5 0.5 0.5 1.0"/></material>
+    </visual>
+    <collision>
+      <origin xyz="0.05 0 0" rpy="0 1.5708 0"/>
+      <geometry><cylinder radius="0.013" length="0.1"/></geometry>
+    </collision>
+    <inertial><mass value="0.2"/><inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/></inertial>
+  </link>
+  <gazebo reference="link_3"><material>Gazebo/DarkGrey</material><mu1>0.0</mu1><mu2>0.0</mu2></gazebo>
+
+  <joint name="mid_pitch_joint" type="revolute">
+    <parent link="link_3"/>
+    <child link="link_4"/>
+    <origin xyz="0.1 0 0" rpy="0 0 0"/> 
+    <axis xyz="0 1 0"/> 
+    <limit lower="-1.0" upper="1.0" effort="100.0" velocity="1.0"/>
+  </joint>
+
+  <link name="link_4">
+    <visual>
+      <origin xyz="0.05 0 0" rpy="0 1.5708 0"/>
+      <geometry><cylinder radius="0.012" length="0.1"/></geometry>
       <material name="gray"><color rgba="0.6 0.6 0.6 1.0"/></material>
     </visual>
     <collision>
-      <origin xyz="0.075 0 0" rpy="0 1.5708 0"/>
-      <geometry><cylinder radius="0.013" length="0.15"/></geometry>
+      <origin xyz="0.05 0 0" rpy="0 1.5708 0"/>
+      <geometry><cylinder radius="0.012" length="0.1"/></geometry>
     </collision>
-    <inertial><mass value="1.0"/><inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/></inertial>
+    <inertial><mass value="0.2"/><inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/></inertial>
   </link>
-  <gazebo reference="mid_link2"><material>Gazebo/Grey</material><mu1>0.0</mu1><mu2>0.0</mu2></gazebo>
+  <gazebo reference="link_4"><material>Gazebo/Grey</material><mu1>0.0</mu1><mu2>0.0</mu2></gazebo>
 
-  <joint name="distal_joint" type="revolute">
-    <parent link="mid_link2"/>
-    <child link="distal_tip"/>
-    <origin xyz="0.15 0 0" rpy="0 0 0"/> 
+  <joint name="distal_yaw_joint" type="revolute">
+    <parent link="link_4"/>
+    <child link="link_5"/>
+    <origin xyz="0.1 0 0" rpy="0 0 0"/> 
     <axis xyz="0 0 1"/> 
     <limit lower="-1.57" upper="1.57" effort="100.0" velocity="1.0"/>
   </joint>
 
+  <link name="link_5">
+    <visual>
+      <origin xyz="0.025 0 0" rpy="0 1.5708 0"/>
+      <geometry><cylinder radius="0.012" length="0.05"/></geometry>
+      <material name="dark_gray"><color rgba="0.5 0.5 0.5 1.0"/></material>
+    </visual>
+    <collision>
+      <origin xyz="0.025 0 0" rpy="0 1.5708 0"/>
+      <geometry><cylinder radius="0.012" length="0.05"/></geometry>
+    </collision>
+    <inertial><mass value="0.1"/><inertia ixx="0.0005" ixy="0" ixz="0" iyy="0.0005" iyz="0" izz="0.0005"/></inertial>
+  </link>
+  <gazebo reference="link_5"><material>Gazebo/DarkGrey</material><mu1>0.0</mu1><mu2>0.0</mu2></gazebo>
+
+  <joint name="distal_roll_joint" type="revolute">
+    <parent link="link_5"/>
+    <child link="distal_tip"/>
+    <origin xyz="0.05 0 0" rpy="0 0 0"/> 
+    <axis xyz="1 0 0"/> 
+    <limit lower="-3.14" upper="3.14" effort="50.0" velocity="2.0"/>
+  </joint>
+
   <link name="distal_tip">
     <visual>
-      <origin xyz="0.05 0 0" rpy="0 1.5708 0"/>
-      <geometry><cylinder radius="0.012" length="0.1"/></geometry>
+      <origin xyz="0.025 0 0" rpy="0 1.5708 0"/>
+      <geometry><cylinder radius="0.012" length="0.05"/></geometry>
       <material name="black"><color rgba="0.1 0.1 0.1 1.0"/></material>
     </visual>
     <collision>
-      <origin xyz="0.05 0 0" rpy="0 1.5708 0"/>
-      <geometry><cylinder radius="0.012" length="0.1"/></geometry>
+      <origin xyz="0.025 0 0" rpy="0 1.5708 0"/>
+      <geometry><cylinder radius="0.012" length="0.05"/></geometry>
     </collision>
     <collision>
-      <origin xyz="0.1 0 0" rpy="0 0 0"/>
+      <origin xyz="0.05 0 0" rpy="0 0 0"/>
       <geometry><sphere radius="0.012"/></geometry>
     </collision>
-    <inertial><mass value="1.0"/><inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/></inertial>
+    <inertial><mass value="0.1"/><inertia ixx="0.0005" ixy="0" ixz="0" iyy="0.0005" iyz="0" izz="0.0005"/></inertial>
   </link>
+
   <gazebo reference="distal_tip">
     <material>Gazebo/Black</material>
     <mu1>0.0</mu1><mu2>0.0</mu2>
     <sensor name="cmos_camera" type="camera">
-      <pose>0.1 0 0 0 0 0</pose> 
+      <pose>0.05 0 0 0 0 0</pose> 
       <always_on>true</always_on>
       <update_rate>30.0</update_rate>
       <camera>
@@ -116,7 +183,7 @@
       </camera>
     </sensor>
     <light name="cold_led" type="spot">
-      <pose>0.1 0 0 0 0 0</pose> 
+      <pose>0.05 0 0 0 0 0</pose> 
       <direction>1 0 0</direction>
       <attenuation><range>2.0</range><linear>0.05</linear><constant>0.1</constant><quadratic>0.001</quadratic></attenuation>
       <diffuse>0.9 0.9 1.0 1</diffuse>
@@ -128,22 +195,42 @@
 
   <ros2_control name="GazeboSimSystem" type="system">
     <hardware><plugin>gz_ros2_control/GazeboSimSystem</plugin></hardware>
+    
     <joint name="insertion_joint">
       <command_interface name="position"><param name="min">-0.5</param><param name="max">1.5</param></command_interface>
       <state_interface name="position"/>
     </joint>
-    <joint name="proximal_joint">
+    
+    <joint name="proximal_yaw_joint">
       <command_interface name="position"><param name="min">-0.6</param><param name="max">0.6</param></command_interface>
       <state_interface name="position"/>
     </joint>
-    <joint name="mid_joint">
+    
+    <joint name="proximal_pitch_joint">
+      <command_interface name="position"><param name="min">-0.6</param><param name="max">0.6</param></command_interface>
+      <state_interface name="position"/>
+    </joint>
+    
+    <joint name="mid_yaw_joint">
       <command_interface name="position"><param name="min">-1.0</param><param name="max">1.0</param></command_interface>
       <state_interface name="position"/>
     </joint>
-    <joint name="distal_joint">
+    
+    <joint name="mid_pitch_joint">
+      <command_interface name="position"><param name="min">-1.0</param><param name="max">1.0</param></command_interface>
+      <state_interface name="position"/>
+    </joint>
+    
+    <joint name="distal_yaw_joint">
       <command_interface name="position"><param name="min">-1.57</param><param name="max">1.57</param></command_interface>
       <state_interface name="position"/>
     </joint>
+    
+    <joint name="distal_roll_joint">
+      <command_interface name="position"><param name="min">-3.14</param><param name="max">3.14</param></command_interface>
+      <state_interface name="position"/>
+    </joint>
+
   </ros2_control>
 
   <gazebo>
