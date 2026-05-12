@@ -27,6 +27,7 @@ install(DIRECTORY
   launch
   urdf
   worlds
+  meshes
   DESTINATION share/${PROJECT_NAME}
 )
 install(PROGRAMS

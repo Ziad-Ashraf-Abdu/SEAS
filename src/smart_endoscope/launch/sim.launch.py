@@ -1,7 +1,7 @@
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription
+from launch.actions import IncludeLaunchDescription, AppendEnvironmentVariable # <--- ADDED IMPORT
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 from launch.substitutions import Command
@@ -12,6 +12,13 @@ def generate_launch_description():
     urdf_file = os.path.join(pkg_share, 'urdf', 'smart_broncho.urdf')
 
     robot_desc = Command(['xacro ', urdf_file])
+
+    # --- THE FIX: Tell Gazebo where to find 'package://' URIs ---
+    # We point it to the 'share' folder (one directory up from pkg_share)
+    set_resource_path = AppendEnvironmentVariable(
+        'GZ_SIM_RESOURCE_PATH',
+        os.path.join(pkg_share, '..') 
+    )
 
     # 1. Start Gazebo
     gz_sim = IncludeLaunchDescription(
@@ -25,10 +32,10 @@ def generate_launch_description():
     robot_state_publisher = Node(
         package='robot_state_publisher',
         executable='robot_state_publisher',
-        parameters=[{'robot_description': robot_desc}]
+        parameters=[{'robot_description': robot_desc, 'use_sim_time': True}]
     )
 
-    # 3. Spawn Robot (Z elevation removed, handled natively in URDF fixed joint)
+    # 3. Spawn Robot
     spawn_robot = Node(
         package='ros_gz_sim',
         executable='create',
@@ -36,11 +43,14 @@ def generate_launch_description():
         output='screen'
     )
 
-    # 4. Bridge the Camera to ROS 2
+    # 4. Bridge the Camera and Clock to ROS 2
     bridge = Node(
         package='ros_gz_bridge',
         executable='parameter_bridge',
-        arguments=['/world/airway_world/model/bronchoscope/link/distal_tip/sensor/cmos_camera/image@sensor_msgs/msg/Image@gz.msgs.Image'],
+        arguments=[
+            '/world/airway_world/model/bronchoscope/link/distal_tip/sensor/cmos_camera/image@sensor_msgs/msg/Image@gz.msgs.Image',
+            '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock'
+        ],
         output='screen'
     )
 
@@ -48,4 +58,7 @@ def generate_launch_description():
     load_jsb = Node(package='controller_manager', executable='spawner', arguments=['joint_state_broadcaster'])
     load_pc = Node(package='controller_manager', executable='spawner', arguments=['position_controller'])
 
-    return LaunchDescription([gz_sim, robot_state_publisher, spawn_robot, bridge, load_jsb, load_pc])
+    # Add set_resource_path to the LaunchDescription!
+    return LaunchDescription([
+        set_resource_path, gz_sim, robot_state_publisher, spawn_robot, bridge, load_jsb, load_pc
+    ])

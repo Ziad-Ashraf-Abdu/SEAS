@@ -127,7 +127,8 @@ class SmartDashboardGUI:
         self.target_x_val = tk.DoubleVar(value=1.0)
 
         self._build_ui()
-        self.root.bind('<KeyPress>', self._on_key)
+        self.root.bind_all('<KeyPress>', self._on_key)
+        self.root.focus_force()  # <--- ADD THIS LINE TO FIX WSL!
         self._update_loop()
 
     # ── UI Construction ───────────────────────────────────────────────────────
@@ -326,10 +327,17 @@ class SmartDashboardGUI:
 
     def _on_key(self, event):
         """Handle keyboard input for 7-DOF."""
-        if self.auto_enabled.get(): return 
+        print(f"[DEBUG] Key physically pressed: '{event.char}'")  # <--- NEW
+        
+        if self.auto_enabled.get(): 
+            print("[DEBUG] Ignored! Dashboard is in AUTO mode.")  # <--- NEW
+            return 
+            
         key = event.char.lower()
+        print(f"[DEBUG] Processing key: '{key}'")                 # <--- NEW
         
         d_theta = [0.0] * 7 
+        # ... (rest of the code stays exactly the same) 
 
         # Lowered insertion speed
         if key == 'w': d_theta[0] = +0.005

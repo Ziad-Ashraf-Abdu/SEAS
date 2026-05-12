@@ -17,6 +17,10 @@ class VisionProcessor:
         Passes a single BGR frame through the 7-step AI detection pipeline.
         Returns the annotated frame.
         """
+        # Get screen dimensions for our "Area Ceiling" and Debugger
+        screen_h, screen_w = frame.shape[:2]
+        screen_area = screen_h * screen_w
+
         # 1. Noise reduction — Bilateral filter (d=9, sigmaColor=75, sigmaSpace=75)
         filtered = cv2.bilateralFilter(frame, 9, 75, 75)
 
@@ -31,9 +35,11 @@ class VisionProcessor:
         hsv = cv2.cvtColor(enhanced, cv2.COLOR_BGR2HSV)
 
         # Define HSV bands (OpenCV H is 0-180, S/V are 0-255)
-        # Red: 0-10 and 170-180
-        mask_red1 = cv2.inRange(hsv, np.array([0, 50, 50]), np.array([10, 255, 255]))
-        mask_red2 = cv2.inRange(hsv, np.array([170, 50, 50]), np.array([180, 255, 255]))
+        # Red: 0-10 and 170-180 (Using the more forgiving 30 saturation/value limits)
+        # ULTRA-STRICT RED: Keep Saturation > 240 to ignore the wall.
+        # Drop Value to 200 to allow the sphere through!
+        mask_red1 = cv2.inRange(hsv, np.array([0, 240, 200]), np.array([10, 255, 255]))
+        mask_red2 = cv2.inRange(hsv, np.array([170, 240, 200]), np.array([180, 255, 255]))
         mask_red = cv2.bitwise_or(mask_red1, mask_red2)
 
         # Yellow: 15-35
@@ -65,14 +71,15 @@ class VisionProcessor:
             cleaned_mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, self.kernel)
 
             # 5. Feature extraction per contour
-            contours, _ = cv2.findContours(cleaned_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            # Change from RETR_EXTERNAL to RETR_LIST
+            contours, _ = cv2.findContours(cleaned_mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
 
             for contour in contours:
                 area = cv2.contourArea(contour)
                 
-                # Filter by area > 100 px^2
-                if area > 100:
-                    x, y, w, h = cv2.boundingRect(contour)
+                # Filter by area > 100 px^2 AND less than 30% of the screen!
+                if 100 < area < (screen_area * 0.30):
+                    x, y, w_box, h_box = cv2.boundingRect(contour)
                     hull = cv2.convexHull(contour)
                     hull_area = cv2.contourArea(hull)
 
@@ -100,6 +107,8 @@ class VisionProcessor:
                     elif color_name == 'Green':
                         label = "Mucus plug"
                         box_color = (0, 255, 0) # BGR Green
+                    elif color_name == 'Blue':
+                        label = "Necrotic mass"  # Swapped to match the new blue model!
                     elif color_name == 'Dark':
                         label = "Necrotic mass"
                         box_color = (50, 50, 50) # Dark Grey
@@ -108,12 +117,26 @@ class VisionProcessor:
                         box_color = (255, 0, 0) # BGR Blue
 
                     # 7. Output: Bounding boxes + labels + convex hull contours
-                    cv2.rectangle(output_frame, (x, y), (x + w, y + h), box_color, 2)
+                    cv2.rectangle(output_frame, (x, y), (x + w_box, y + h_box), box_color, 2)
                     cv2.drawContours(output_frame, [hull], 0, (255, 255, 255), 1) # White overlay for texture
                     
                     # Add label and solidity metric to the HUD
                     text = f"{label} (Sol: {solidity:.2f})"
                     cv2.putText(output_frame, text, (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, box_color, 2)
+
+        # --- THE CROSSHAIR DEBUGGER ---
+        # Find the center of the screen
+        cx, cy = screen_w // 2, screen_h // 2
+        
+        # Draw a small crosshair in the center
+        cv2.drawMarker(output_frame, (cx, cy), (255, 255, 255), cv2.MARKER_CROSS, 20, 2)
+        
+        # Read the exact HSV value of the pixel right under the crosshair
+        center_hsv = hsv[cy, cx]
+        
+        # Print that HSV value on the bottom-left of the camera feed
+        cv2.putText(output_frame, f"Center HSV: {center_hsv}", (10, screen_h - 30), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
         return output_frame
 
