@@ -67,7 +67,7 @@ class RobotState:
 
     def clipped(self):
         return RobotState(
-            insertion  = np.clip(self.insertion,  -0.50, 1.50),
+            insertion  = np.clip(self.insertion,  -0.50, 30.0),
             prox_yaw   = np.clip(self.prox_yaw,   -0.60, 0.60),
             prox_pitch = np.clip(self.prox_pitch, -0.60, 0.60),
             mid_yaw    = np.clip(self.mid_yaw,    -1.00, 1.00),

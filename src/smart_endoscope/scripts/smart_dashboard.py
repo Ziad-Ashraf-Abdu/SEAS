@@ -204,8 +204,8 @@ class SmartDashboardGUI:
         target_frame.pack(fill="x", **pad, pady=(0, 6))
         self.target_slider = tk.Scale(
             target_frame, variable=self.target_x_val,
-            # SAFE BOUNDARIES: 0.1m minimum, 0.5m maximum
-            from_=0.1, to=0.5, resolution=0.01, orient="horizontal",
+            # SAFE BOUNDARIES: 0.1m minimum, 1.5m maximum
+            from_=0.1, to=1.5, resolution=0.01, orient="horizontal",
             bg=PANEL_BG, fg=CYAN_DIM, troughcolor=BORDER_COL,
             highlightthickness=0, bd=0, showvalue=True,
             activebackground=CYAN_DIM,
