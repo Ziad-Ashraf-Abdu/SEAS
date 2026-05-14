@@ -1,7 +1,6 @@
 controller_manager:
   ros__parameters:
     update_rate: 100
-    use_sim_time: true
 
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster
@@ -11,7 +10,17 @@ controller_manager:
 
 position_controller:
   ros__parameters:
+    # Order MUST match RobotState.as_list in broncho_controller.py:
+    #   [0] vertical_joint   — raises/lowers entire arm (world Z)
+    #   [1] insertion_joint  — advances/retracts scope along X
+    #   [2] proximal_yaw_joint
+    #   [3] proximal_pitch_joint
+    #   [4] mid_yaw_joint
+    #   [5] mid_pitch_joint
+    #   [6] distal_yaw_joint
+    #   [7] distal_roll_joint
     joints:
+      - vertical_joint
       - insertion_joint
       - proximal_yaw_joint
       - proximal_pitch_joint

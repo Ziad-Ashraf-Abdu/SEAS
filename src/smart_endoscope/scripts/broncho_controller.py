@@ -46,12 +46,16 @@ AUTO_GOAL_THRESHOLD    = 0.02
 AUTO_WALL_ZONE         = 0.12   
 AUTO_REPULSE_GAIN      = 2.50   
 
+# Vertical rail step per key-press (metres)
+VERTICAL_STEP = 0.01   # 1 cm per key event
+
 # ---------------------------------------------------------------------------
-# Robot State (Now 7-DOF)
+# Robot State (Now 8-DOF: vertical rail + 7 arm joints)
 # ---------------------------------------------------------------------------
 class RobotState:
-    def __init__(self, insertion=0.0, prox_yaw=0.0, prox_pitch=0.0, 
+    def __init__(self, vertical=0.0, insertion=0.0, prox_yaw=0.0, prox_pitch=0.0,
                  mid_yaw=0.0, mid_pitch=0.0, dist_yaw=0.0, dist_roll=0.0):
+        self.vertical   = vertical      # world-Z translation of entire arm (m)
         self.insertion  = insertion
         self.prox_yaw   = prox_yaw
         self.prox_pitch = prox_pitch
@@ -62,18 +66,22 @@ class RobotState:
 
     @property
     def as_list(self):
-        return [self.insertion, self.prox_yaw, self.prox_pitch, 
+        # Order MUST match controllers.yaml joint order:
+        # vertical_joint, insertion_joint, proximal_yaw, proximal_pitch,
+        # mid_yaw, mid_pitch, distal_yaw, distal_roll
+        return [self.vertical, self.insertion, self.prox_yaw, self.prox_pitch,
                 self.mid_yaw, self.mid_pitch, self.dist_yaw, self.dist_roll]
 
     def clipped(self):
         return RobotState(
+            vertical   = np.clip(self.vertical,   -0.30,  0.30),
             insertion  = np.clip(self.insertion,  -0.50, 30.0),
-            prox_yaw   = np.clip(self.prox_yaw,   -0.60, 0.60),
-            prox_pitch = np.clip(self.prox_pitch, -0.60, 0.60),
-            mid_yaw    = np.clip(self.mid_yaw,    -1.00, 1.00),
-            mid_pitch  = np.clip(self.mid_pitch,  -1.00, 1.00),
-            dist_yaw   = np.clip(self.dist_yaw,   -1.57, 1.57),
-            dist_roll  = np.clip(self.dist_roll,  -3.14, 3.14),
+            prox_yaw   = np.clip(self.prox_yaw,   -0.60,  0.60),
+            prox_pitch = np.clip(self.prox_pitch, -0.60,  0.60),
+            mid_yaw    = np.clip(self.mid_yaw,    -1.00,  1.00),
+            mid_pitch  = np.clip(self.mid_pitch,  -1.00,  1.00),
+            dist_yaw   = np.clip(self.dist_yaw,   -1.57,  1.57),
+            dist_roll  = np.clip(self.dist_roll,  -3.14,  3.14),
         )
 
 # ---------------------------------------------------------------------------
@@ -120,16 +128,22 @@ class CollisionGuard:
         self._integral[:] = 0.0
 
     def filter_command(self, state: RobotState, d_theta: list, frame=None) -> RobotState:
-        thetas = state.as_list
-        T_sb = self.kin.forward_kinematics_space(thetas)
+        # vertical_joint (index 0) is independent of the arm kinematics —
+        # slice it off before passing to BronchoKinematics which expects 7 values
+        all_vals = state.as_list                   # length 8
+        arm_thetas = all_vals[1:]                  # length 7 — arm joints only
+        d_all = np.array(d_theta, dtype=float)     # length 8
+        d_arm = d_all[1:]                          # length 7
+
+        T_sb = self.kin.forward_kinematics_space(arm_thetas)
         tip_xy = T_sb[:2, 3]
 
         dist, normal_2d, margin = estimate_wall_proximity(frame, tip_xy)
-        d_theta = np.array(d_theta, dtype=float)
 
         if dist >= GUARD_WALL_THRESHOLD:
             self._integral[:] = 0.0
-            return RobotState(*(np.array(thetas) + d_theta)).clipped()
+            new_vals = np.array(all_vals) + d_all
+            return RobotState(*new_vals).clipped()
 
         error_xy = normal_2d * (GUARD_WALL_THRESHOLD - dist)
         self._integral += error_xy
@@ -137,18 +151,22 @@ class CollisionGuard:
 
         V_corrective = np.array([0.0, 0.0, 0.0, corrective_xy[0], corrective_xy[1], 0.0])
 
-        Js = self.kin.jacobian_space(thetas)
+        Js = self.kin.jacobian_space(arm_thetas)
         Jb = self.kin.jacobian_body(Js, T_sb)
-        Jb_pinv = np.linalg.pinv(Jb) # Automatically handles 7x6 redundancy
-        
-        d_theta_correction = np.clip(np.dot(Jb_pinv, V_corrective), -GUARD_MAX_CORRECTION, GUARD_MAX_CORRECTION)
+        Jb_pinv = np.linalg.pinv(Jb)
 
-        user_tip_motion = np.dot(Jb[3:5, :], d_theta)
+        d_arm_correction = np.clip(
+            np.dot(Jb_pinv, V_corrective), -GUARD_MAX_CORRECTION, GUARD_MAX_CORRECTION
+        )
+
+        user_tip_motion = np.dot(Jb[3:5, :], d_arm)
         into_wall = np.dot(user_tip_motion, -normal_2d)
-        d_theta_safe = d_theta * GUARD_DAMP if into_wall > 0 else d_theta
+        d_arm_safe = d_arm * GUARD_DAMP if into_wall > 0 else d_arm
 
-        combined = d_theta_safe + d_theta_correction
-        return RobotState(*(np.array(thetas) + combined)).clipped()
+        # Combine: vertical passes through unmodified; arm joints get safety filter
+        new_arm = np.array(arm_thetas) + d_arm_safe + d_arm_correction
+        new_vertical = all_vals[0] + d_all[0]
+        return RobotState(new_vertical, *new_arm).clipped()
 
 # ===========================================================================
 # 2. AUTO PILOT
@@ -169,23 +187,22 @@ class AutoPilot:
         if self._done: return state
         self._tick += 1
 
-        thetas = state.as_list
-        T_sb = self.kin.forward_kinematics_space(thetas)
+        all_vals   = state.as_list      # length 8
+        arm_thetas = all_vals[1:]       # length 7 — arm joints only
+
+        T_sb = self.kin.forward_kinematics_space(arm_thetas)
         tip = T_sb[:3, 3]
 
         distance_to_goal = self.goal_x - tip[0]
-        
-        # Stop if we are close enough to the target (e.g., within 2cm)
+
         if abs(distance_to_goal) <= AUTO_GOAL_THRESHOLD:
             self._done = True
             return state
 
-        # Figure out if we need to go forward (+1) or backward (-1)
         direction = np.sign(distance_to_goal)
-        
+
         dist, normal_2d, _ = estimate_wall_proximity(frame, tip[:2])
-        
-        # Move the insertion joint in the correct direction
+
         new_insertion = state.insertion + (direction * AUTO_INSERT_SPEED)
 
         error_xy = normal_2d * (AUTO_WALL_ZONE - dist) * AUTO_REPULSE_GAIN if dist < AUTO_WALL_ZONE else np.zeros(2)
@@ -193,21 +210,22 @@ class AutoPilot:
         lateral_correction = AUTO_BEND_KP * error_xy + AUTO_BEND_KI * self._integral
 
         V_b = np.array([0.0, 0.0, 0.0, lateral_correction[0], lateral_correction[1], 0.0])
-        Js = self.kin.jacobian_space(thetas)
+        Js = self.kin.jacobian_space(arm_thetas)
         Jb = self.kin.jacobian_body(Js, T_sb)
 
         ellips = self.kin.ellipsoid_analysis(Js)
         if ellips['linear']['mu1'] != float('inf'):
-            d_theta = np.clip(np.dot(np.linalg.pinv(Jb), V_b), -0.04, 0.04)
+            d_arm = np.clip(np.dot(np.linalg.pinv(Jb), V_b), -0.04, 0.04)
         else:
-            d_theta = np.zeros(7)
+            d_arm = np.zeros(7)
 
         if dist >= AUTO_WALL_ZONE:
-            d_theta[5] += 0.015 * np.sin(2 * np.pi * 0.05 * self._tick) # Wiggle distal yaw
+            d_arm[5] += 0.015 * np.sin(2 * np.pi * 0.05 * self._tick)
 
-        new_thetas = np.array(thetas) + d_theta
-        new_thetas[0] = new_insertion
-        return RobotState(*new_thetas).clipped()
+        new_arm = np.array(arm_thetas) + d_arm
+        new_arm[0] = new_insertion   # override insertion with forward-drive value
+        # vertical_joint is untouched during autopilot — keep current value
+        return RobotState(state.vertical, *new_arm).clipped()
 
 # ===========================================================================
 # 3. STATUS

@@ -2,6 +2,11 @@
 <robot name="bronchoscope">
 
   <link name="world"/>
+
+  <!--
+    world_fixed: anchors the vertical rail to the world at the original
+    spawn position.  This joint is fixed – only the rail itself moves.
+  -->
   <joint name="world_fixed" type="fixed">
     <parent link="world"/>
     <child link="rail_link"/>
@@ -9,11 +14,28 @@
   </joint>
 
   <link name="rail_link">
-    <inertial><mass value="1.0"/><inertia ixx="0.1" ixy="0" ixz="0" iyy="0.1" iyz="0" izz="0.1"/></inertial>
+    <inertial><mass value="2.0"/><inertia ixx="0.1" ixy="0" ixz="0" iyy="0.1" iyz="0" izz="0.1"/></inertial>
+  </link>
+
+  <!--
+    vertical_joint: prismatic joint that slides the ENTIRE arm assembly
+    up (+Z) and down (-Z) along the rail, keeping all arm orientations
+    unchanged.  Range ±0.3 m is enough to clear typical airway walls.
+  -->
+  <joint name="vertical_joint" type="prismatic">
+    <parent link="rail_link"/>
+    <child link="vertical_carriage"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.3" upper="0.3" effort="100.0" velocity="0.5"/>
+  </joint>
+
+  <link name="vertical_carriage">
+    <inertial><mass value="0.5"/><inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/></inertial>
   </link>
 
   <joint name="insertion_joint" type="prismatic">
-    <parent link="rail_link"/>
+    <parent link="vertical_carriage"/>
     <child link="base_link"/>
     <origin xyz="0 0 0" rpy="0 0 0"/>
     <axis xyz="1 0 0"/>
@@ -195,6 +217,11 @@
 
   <ros2_control name="GazeboSimSystem" type="system">
     <hardware><plugin>gz_ros2_control/GazeboSimSystem</plugin></hardware>
+
+    <joint name="vertical_joint">
+      <command_interface name="position"><param name="min">-0.3</param><param name="max">0.3</param></command_interface>
+      <state_interface name="position"/>
+    </joint>
     
     <joint name="insertion_joint">
       <command_interface name="position"><param name="min">-0.5</param><param name="max">1.5</param></command_interface>

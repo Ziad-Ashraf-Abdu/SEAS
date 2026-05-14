@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
 """
-smart_dashboard.py  –  Smart Bronchoscope ROS 2 Dashboard  (Chapter 11 edition)
-=================================================================================
+smart_dashboard.py  –  Smart Bronchoscope ROS 2 Dashboard  (Clinical Edition)
+===============================================================================
 
-NEW in this version
-───────────────────
-  AUTO mode  – tick the "AUTO" checkbox and the scope navigates itself,
-               advancing forward while bending away from walls, using the
-               AutoPilot computed-torque / task-space PI controller.
+Redesigned for clinical users (doctors & medical students).
+All engineering internals (ROS2, kinematics, autopilot) are unchanged.
+Only the presentation layer has been updated for medical usability.
 
-  Collision Guard (Manual mode) – every keyboard command is filtered by
-               CollisionGuard before being sent to Gazebo, so the tip
-               never touches a wall even under manual control.
-
-  Surgical dark theme – redesigned UI using a deep-space palette with
-               amber accent lines, monospaced telemetry, and a status
-               strip that changes colour with robot health.
+Controls
+────────
+  W / S   Advance deeper / Withdraw scope
+  A / D   Steer left / Steer right
+  R / F   Bend upward / Bend downward
+  Q / E   Rotate tip clockwise / counter-clockwise
+  T       Move to preset target position (IK)
+  AUTO    Let the system navigate automatically
 """
 
 import rclpy
@@ -35,31 +34,68 @@ from vision_pipeline import VisionProcessor
 from broncho_controller import (
     CollisionGuard, AutoPilot, RobotState,
     estimate_wall_proximity, guard_status_text, auto_status_text,
-    GUARD_WALL_THRESHOLD, AUTO_WALL_ZONE,
+    GUARD_WALL_THRESHOLD, AUTO_WALL_ZONE, VERTICAL_STEP,
 )
 
 
-# ── Colour palette ────────────────────────────────────────────────────────────
-DARK_BG      = "#0a0c0f"
-PANEL_BG     = "#0f1318"
-BORDER_COL   = "#1e2530"
-AMBER        = "#e8a020"
-AMBER_BRIGHT = "#f5c040"
-CYAN_DIM     = "#2dd4bf"
-RED_ALERT    = "#ef4444"
-GREEN_OK     = "#22c55e"
-YELLOW_WARN  = "#eab308"
-TEXT_DIM     = "#4a5568"
-TEXT_MUTED   = "#718096"
-TEXT_MAIN    = "#e2e8f0"
-TEXT_BRIGHT  = "#f8fafc"
+# ── Clinical Colour Palette ───────────────────────────────────────────────────
+# Deep navy-black surgical environment — familiar to anyone who's seen an OR monitor
+DARK_BG       = "#06080d"          # near-black background
+PANEL_BG      = "#0c1018"          # panel background
+CARD_BG       = "#111722"          # card / section background
+BORDER_COL    = "#1c2535"          # subtle borders
+BORDER_LIGHT  = "#253040"
 
-STATUS_BAR_H = 28      # px
-PANEL_W      = 320     # px
+# Clinical traffic-light system (universal to medical staff)
+SAFE_GREEN    = "#1eba6a"          # safe / all-clear
+CAUTION_AMBER = "#f5a623"          # caution / attention needed
+DANGER_RED    = "#e84040"          # warning / stop
+INFO_BLUE     = "#4db8e8"          # informational cyan-blue
+
+# Accent & highlight
+SCOPE_TEAL    = "#00c4b0"          # scope / position accent
+GOLD          = "#d4a843"          # headings, active states
+GOLD_BRIGHT   = "#f0c060"
+
+# Text hierarchy
+TEXT_BRIGHT   = "#f0f4f8"          # primary readout
+TEXT_MAIN     = "#b8c8d8"          # body text
+TEXT_MUTED    = "#607080"          # labels, secondary
+TEXT_DIM      = "#384858"          # very dim / disabled
+
+STATUS_BAR_H  = 32
+PANEL_W       = 340
+
+
+# ── Human-readable translations ───────────────────────────────────────────────
+
+def depth_cm(m_val: float) -> str:
+    """Convert metres to centimetres for clinical display."""
+    return f"{m_val * 100:.1f} cm"
+
+
+def proximity_label(dist: float) -> tuple[str, str]:
+    """Return (label, colour) for wall proximity in plain English."""
+    if dist < GUARD_WALL_THRESHOLD * 0.5:
+        return "⚠  WALL VERY CLOSE — Scope protected", DANGER_RED
+    elif dist < GUARD_WALL_THRESHOLD:
+        return "▲  Approaching airway wall — Slowing", CAUTION_AMBER
+    else:
+        return "✔  Clear — Safe to advance", SAFE_GREEN
+
+
+def navigation_status(auto_on: bool, pilot, state) -> tuple[str, str]:
+    """Return (label, colour) for navigation mode."""
+    if not auto_on:
+        return "Manual Control  (keyboard active)", TEXT_MUTED
+    if pilot.is_done:
+        return "✔  Target depth reached", SAFE_GREEN
+    pct = int(np.clip(state.insertion / pilot.goal_x, 0.0, 1.0) * 100)
+    return f"Auto-navigating … {pct}% to target", SCOPE_TEAL
 
 
 # =============================================================================
-# ROS 2 Node
+# ROS 2 Node  (unchanged)
 # =============================================================================
 
 class SmartDashboardNode(Node):
@@ -92,25 +128,25 @@ class SmartDashboardNode(Node):
 
 
 # =============================================================================
-# GUI
+# GUI  (clinical redesign)
 # =============================================================================
 
 class SmartDashboardGUI:
 
-    # ── Init ─────────────────────────────────────────────────────────────────
+    # ── Init ──────────────────────────────────────────────────────────────────
 
     def __init__(self, root: tk.Tk, ros_node: SmartDashboardNode):
         self.root = root
         self.node = ros_node
-        self.root.title("Smart Bronchoscope – ROS 2 Dashboard")
+        self.root.title("Smart Bronchoscope  –  Clinical Control System")
         self.root.configure(bg=DARK_BG)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # ── Engines ──────────────────────────────────────────────────────────
-        self.kin     = BronchoKinematics(L1=0.20, L2=0.10, L3=0.05)
-        self.vision  = VisionProcessor()
-        self.guard   = CollisionGuard(self.kin)
-        self.pilot   = AutoPilot(self.kin, goal_x=1.40)
+        self.kin    = BronchoKinematics(L1=0.20, L2=0.10, L3=0.05)
+        self.vision = VisionProcessor()
+        self.guard  = CollisionGuard(self.kin)
+        self.pilot  = AutoPilot(self.kin, goal_x=1.40)
 
         # ── Robot state ──────────────────────────────────────────────────────
         self.state        = RobotState()
@@ -128,197 +164,308 @@ class SmartDashboardGUI:
 
         self._build_ui()
         self.root.bind_all('<KeyPress>', self._on_key)
-        self.root.focus_force()  # <--- ADD THIS LINE TO FIX WSL!
+        self.root.focus_force()
         self._update_loop()
 
     # ── UI Construction ───────────────────────────────────────────────────────
 
     def _build_ui(self):
-        # ── Root grid ────────────────────────────────────────────────────────
         self.root.columnconfigure(0, weight=1)
         self.root.columnconfigure(1, minsize=PANEL_W, weight=0)
         self.root.rowconfigure(0, weight=1)
         self.root.rowconfigure(1, minsize=STATUS_BAR_H, weight=0)
 
-        # ── Camera canvas ────────────────────────────────────────────────────
-        cam_frame = tk.Frame(self.root, bg=DARK_BG, bd=0)
-        cam_frame.grid(row=0, column=0, sticky="nsew", padx=(8, 4), pady=(8, 4))
+        # ── Camera feed area ─────────────────────────────────────────────────
+        cam_outer = tk.Frame(self.root, bg=DARK_BG, bd=0)
+        cam_outer.grid(row=0, column=0, sticky="nsew", padx=(10, 5), pady=(10, 5))
+
+        # Label above camera
+        cam_header = tk.Frame(cam_outer, bg=DARK_BG)
+        cam_header.pack(fill="x", pady=(0, 4))
+        tk.Label(
+            cam_header, text="ENDOSCOPE CAMERA FEED",
+            bg=DARK_BG, fg=TEXT_MUTED,
+            font=("Helvetica", 9, "bold"), anchor="w",
+        ).pack(side="left")
+        self.cam_status_dot = tk.Label(
+            cam_header, text="●  LIVE",
+            bg=DARK_BG, fg=SAFE_GREEN,
+            font=("Helvetica", 9, "bold"),
+        )
+        self.cam_status_dot.pack(side="right")
+
         self.canvas = tk.Canvas(
-            cam_frame, width=640, height=480,
-            bg="#000000", highlightthickness=1,
-            highlightbackground=BORDER_COL,
+            cam_outer, width=640, height=480,
+            bg="#000000", highlightthickness=2,
+            highlightbackground=BORDER_LIGHT,
         )
         self.canvas.pack(fill="both", expand=True)
 
         # ── Right control panel ───────────────────────────────────────────────
-        panel = tk.Frame(
-            self.root, bg=PANEL_BG, bd=0, width=PANEL_W,
-        )
-        panel.grid(row=0, column=1, sticky="nsew", padx=(4, 8), pady=(8, 4))
+        panel = tk.Frame(self.root, bg=PANEL_BG, bd=0, width=PANEL_W)
+        panel.grid(row=0, column=1, sticky="nsew", padx=(5, 10), pady=(10, 5))
         panel.grid_propagate(False)
         self._build_panel(panel)
 
         # ── Status bar ───────────────────────────────────────────────────────
         self.status_bar = tk.Label(
             self.root,
-            text=" SYSTEM READY",
-            bg=PANEL_BG, fg=CYAN_DIM,
-            font=("Courier", 10),
-            anchor="w", padx=12,
+            text="  System initialising …",
+            bg="#090d14", fg=INFO_BLUE,
+            font=("Helvetica", 10),
+            anchor="w", padx=14,
         )
-        self.status_bar.grid(row=1, column=0, columnspan=2,
-                             sticky="ew", ipady=4)
+        self.status_bar.grid(row=1, column=0, columnspan=2, sticky="ew", ipady=6)
 
     def _build_panel(self, parent):
-        pad = dict(padx=16)  # only padx here; pady is always passed explicitly
+        px = dict(padx=14)
 
-        # ── Title ─────────────────────────────────────────────────────────────
+        # ── Header ────────────────────────────────────────────────────────────
+        hdr = tk.Frame(parent, bg="#0a1020", pady=0)
+        hdr.pack(fill="x")
         tk.Label(
-            parent, text="BRONCHOSCOPE", bg=PANEL_BG, fg=AMBER,
-            font=("Courier", 15, "bold"),
-        ).pack(pady=(18, 0))
+            hdr, text="SMART BRONCHOSCOPE",
+            bg="#0a1020", fg=GOLD,
+            font=("Helvetica", 14, "bold"),
+        ).pack(pady=(16, 0))
         tk.Label(
-            parent, text="ROS 2  /  CHAPTER 11 CONTROL", bg=PANEL_BG,
-            fg=TEXT_DIM, font=("Courier", 8),
-        ).pack(pady=(0, 14))
+            hdr, text="Clinical Navigation System",
+            bg="#0a1020", fg=TEXT_MUTED,
+            font=("Helvetica", 9),
+        ).pack(pady=(2, 14))
 
-        self._separator(parent)
+        tk.Frame(parent, bg=BORDER_COL, height=1).pack(fill="x")
 
-        # ── Mode toggles ──────────────────────────────────────────────────────
-        mode_frame = tk.Frame(parent, bg=PANEL_BG)
-        mode_frame.pack(fill="x", **pad, pady=(10, 6))
+        # ── SAFETY MONITOR card ──────────────────────────────────────────────
+        self._section_label(parent, "🛡  SAFETY MONITOR")
 
-        self._toggle(mode_frame, "⚙  AUTO NAVIGATE",
-                     self.auto_enabled, AMBER, self._on_auto_toggle,
-                     side="left")
-        self._toggle(mode_frame, "🧠  AI VISION",
-                     self.ai_enabled, CYAN_DIM, None,
-                     side="right")
+        safety_card = tk.Frame(parent, bg=CARD_BG, bd=0)
+        safety_card.pack(fill="x", **px, pady=(4, 8))
 
-        self._separator(parent)
-
-        tk.Label(parent, text="AUTO TARGET DEPTH (m)", bg=PANEL_BG,
-                 fg=TEXT_MUTED, font=("Courier", 8)).pack(**pad, pady=(10, 2))
-
-        target_frame = tk.Frame(parent, bg=PANEL_BG)
-        target_frame.pack(fill="x", **pad, pady=(0, 6))
-        self.target_slider = tk.Scale(
-            target_frame, variable=self.target_x_val,
-            # SAFE BOUNDARIES: 0.1m minimum, 1.5m maximum
-            from_=0.1, to=1.5, resolution=0.01, orient="horizontal",
-            bg=PANEL_BG, fg=CYAN_DIM, troughcolor=BORDER_COL,
-            highlightthickness=0, bd=0, showvalue=True,
-            activebackground=CYAN_DIM,
-        )
-        self.target_slider.pack(fill="x")
-
-        self._separator(parent)
-
-        # ── Light slider ──────────────────────────────────────────────────────
-        tk.Label(parent, text="LIGHT INTENSITY", bg=PANEL_BG,
-                 fg=TEXT_MUTED, font=("Courier", 8)).pack(**pad, pady=(10, 2))
-
-        slider_frame = tk.Frame(parent, bg=PANEL_BG)
-        slider_frame.pack(fill="x", **pad, pady=(0, 6))
-        self.light_slider = tk.Scale(
-            slider_frame, variable=self.light_val,
-            from_=0.1, to=2.5, resolution=0.05, orient="horizontal",
-            bg=PANEL_BG, fg=AMBER, troughcolor=BORDER_COL,
-            highlightthickness=0, bd=0, showvalue=False,
-            activebackground=AMBER_BRIGHT,
-        )
-        self.light_slider.pack(fill="x")
-
-        self._separator(parent)
-
-        # ── Controls legend ───────────────────────────────────────────────────
-        tk.Label(parent, text="KEYBOARD", bg=PANEL_BG,
-                 fg=TEXT_MUTED, font=("Courier", 8)).pack(**pad, pady=(10, 4))
-        legend = [
-            ("W / S", "Insert / Retract"),
-            ("A / D", "Yaw (Left/Right)"),
-            ("R / F", "Pitch (Up/Down)"),
-            ("Q / E", "Roll Tip (Twist)"),
-            ("AUTO",  "Autonomous drive"),
-        ]
-        for key, desc in legend:
-            row = tk.Frame(parent, bg=PANEL_BG)
-            row.pack(fill="x", padx=16, pady=1)
-            tk.Label(row, text=key, bg=PANEL_BG, fg=AMBER,
-                     font=("Courier", 9, "bold"), width=6, anchor="w").pack(side="left")
-            tk.Label(row, text=desc, bg=PANEL_BG, fg=TEXT_MUTED,
-                     font=("Courier", 9), anchor="w").pack(side="left")
-
-        self._separator(parent)
-
-        # ── Telemetry readout ─────────────────────────────────────────────────
-        tk.Label(parent, text="TIP POSITION  (m)", bg=PANEL_BG,
-                 fg=TEXT_MUTED, font=("Courier", 8)).pack(**pad, pady=(10, 2))
-        self.pos_label = tk.Label(
-            parent, text="X: 0.000   Y: 0.000   Z: 0.000",
-            bg=PANEL_BG, fg=AMBER_BRIGHT, font=("Courier", 12, "bold"),
-        )
-        self.pos_label.pack(**pad, pady=(0, 8))
-
-        # Joints
-        tk.Label(parent, text="JOINT STATE", bg=PANEL_BG,
-                 fg=TEXT_MUTED, font=("Courier", 8)).pack(**pad, pady=(4, 2))
-        self.joint_label = tk.Label(
-            parent, text="INS 0.000  P 0.000  M 0.000  D 0.000",
-            bg=PANEL_BG, fg=TEXT_MAIN, font=("Courier", 10),
-        )
-        self.joint_label.pack(**pad, pady=(0, 6))
-
-        # Manipulability
-        tk.Label(parent, text="MANIPULABILITY", bg=PANEL_BG,
-                 fg=TEXT_MUTED, font=("Courier", 8)).pack(**pad, pady=(4, 2))
-        self.manip_label = tk.Label(
-            parent, text="VOL – – –   COND – – –",
-            bg=PANEL_BG, fg=TEXT_MAIN, font=("Courier", 10),
-        )
-        self.manip_label.pack(**pad, pady=(0, 6))
-
-        self._separator(parent)
-
-        # Guard & auto status
         self.guard_label = tk.Label(
-            parent, text="GUARD  –",
-            bg=PANEL_BG, fg=GREEN_OK, font=("Courier", 9),
-            wraplength=280, justify="left",
+            safety_card,
+            text="✔  Clear — Safe to advance",
+            bg=CARD_BG, fg=SAFE_GREEN,
+            font=("Helvetica", 10, "bold"),
+            anchor="w", wraplength=290, justify="left", padx=10, pady=8,
         )
-        self.guard_label.pack(**pad, pady=(8, 4))
+        self.guard_label.pack(fill="x")
 
+        tk.Frame(parent, bg=BORDER_COL, height=1).pack(fill="x", **px)
+
+        # ── SCOPE POSITION card ──────────────────────────────────────────────
+        self._section_label(parent, "📍  SCOPE POSITION")
+
+        pos_card = tk.Frame(parent, bg=CARD_BG, bd=0)
+        pos_card.pack(fill="x", **px, pady=(4, 8))
+
+        # Insertion depth — the most clinically relevant value, shown large
+        tk.Label(
+            pos_card, text="Insertion Depth",
+            bg=CARD_BG, fg=TEXT_MUTED,
+            font=("Helvetica", 8), anchor="w",
+        ).pack(fill="x", padx=10, pady=(8, 0))
+
+        self.depth_label = tk.Label(
+            pos_card,
+            text="0.0 cm",
+            bg=CARD_BG, fg=GOLD_BRIGHT,
+            font=("Helvetica", 24, "bold"),
+            anchor="w",
+        )
+        self.depth_label.pack(fill="x", padx=10, pady=(0, 4))
+
+        # Tip coordinates in smaller text
+        tk.Label(
+            pos_card, text="Tip co-ordinates (X / Y / Z)",
+            bg=CARD_BG, fg=TEXT_MUTED,
+            font=("Helvetica", 8), anchor="w",
+        ).pack(fill="x", padx=10)
+
+        self.pos_label = tk.Label(
+            pos_card,
+            text="0.000  /  0.000  /  0.000  m",
+            bg=CARD_BG, fg=SCOPE_TEAL,
+            font=("Courier", 11),
+            anchor="w",
+        )
+        self.pos_label.pack(fill="x", padx=10, pady=(2, 4))
+
+        # Scope flexibility (manipulability) — shown as plain health indicator
+        tk.Label(
+            pos_card, text="Scope manoeuvrability",
+            bg=CARD_BG, fg=TEXT_MUTED,
+            font=("Helvetica", 8), anchor="w",
+        ).pack(fill="x", padx=10)
+
+        self.manip_label = tk.Label(
+            pos_card,
+            text="Good",
+            bg=CARD_BG, fg=SAFE_GREEN,
+            font=("Helvetica", 10, "bold"),
+            anchor="w",
+        )
+        self.manip_label.pack(fill="x", padx=10, pady=(2, 8))
+
+        tk.Frame(parent, bg=BORDER_COL, height=1).pack(fill="x", **px)
+
+        # ── NAVIGATION MODE card ─────────────────────────────────────────────
+        self._section_label(parent, "🧭  NAVIGATION MODE")
+
+        mode_card = tk.Frame(parent, bg=CARD_BG, bd=0)
+        mode_card.pack(fill="x", **px, pady=(4, 8))
+
+        # Mode toggles — bigger, clearer buttons
+        toggle_row = tk.Frame(mode_card, bg=CARD_BG)
+        toggle_row.pack(fill="x", padx=8, pady=(8, 4))
+
+        self.auto_btn = tk.Checkbutton(
+            toggle_row,
+            text="  Auto-Navigate",
+            variable=self.auto_enabled,
+            bg=CARD_BG, fg=GOLD,
+            selectcolor=DARK_BG,
+            activebackground=CARD_BG, activeforeground=GOLD_BRIGHT,
+            font=("Helvetica", 10, "bold"),
+            command=self._on_auto_toggle,
+        )
+        self.auto_btn.pack(side="left")
+
+        self.ai_btn = tk.Checkbutton(
+            toggle_row,
+            text="  AI Vision",
+            variable=self.ai_enabled,
+            bg=CARD_BG, fg=SCOPE_TEAL,
+            selectcolor=DARK_BG,
+            activebackground=CARD_BG, activeforeground=INFO_BLUE,
+            font=("Helvetica", 10, "bold"),
+        )
+        self.ai_btn.pack(side="right")
+
+        # Navigation status text
         self.auto_label = tk.Label(
-            parent, text="AUTO  –",
-            bg=PANEL_BG, fg=TEXT_DIM, font=("Courier", 9),
+            mode_card,
+            text="Manual Control  (keyboard active)",
+            bg=CARD_BG, fg=TEXT_MUTED,
+            font=("Helvetica", 9), anchor="w", padx=10,
         )
-        self.auto_label.pack(**pad, pady=(0, 12))
+        self.auto_label.pack(fill="x", pady=(2, 4))
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
+        # Target depth slider — labelled for doctors
+        tk.Label(
+            mode_card, text="Auto-navigate target depth",
+            bg=CARD_BG, fg=TEXT_MUTED,
+            font=("Helvetica", 8), anchor="w",
+        ).pack(fill="x", padx=10, pady=(4, 0))
 
-    def _separator(self, parent):
-        tk.Frame(parent, bg=BORDER_COL, height=1).pack(
-            fill="x", padx=10, pady=4,
+        depth_row = tk.Frame(mode_card, bg=CARD_BG)
+        depth_row.pack(fill="x", padx=10, pady=(0, 4))
+
+        tk.Label(depth_row, text="10 cm", bg=CARD_BG,
+                 fg=TEXT_DIM, font=("Helvetica", 8)).pack(side="left")
+
+        self.target_slider = tk.Scale(
+            depth_row, variable=self.target_x_val,
+            from_=0.1, to=1.5, resolution=0.01, orient="horizontal",
+            bg=CARD_BG, fg=SCOPE_TEAL, troughcolor=BORDER_COL,
+            highlightthickness=0, bd=0, showvalue=False,
+            activebackground=SCOPE_TEAL,
         )
+        self.target_slider.pack(side="left", fill="x", expand=True)
 
-    def _toggle(self, parent, text, var, color, cmd, side):
-        cb = tk.Checkbutton(
-            parent, text=text, variable=var,
-            bg=PANEL_BG, fg=color, selectcolor=DARK_BG,
-            activebackground=PANEL_BG, activeforeground=color,
-            font=("Courier", 9, "bold"),
-            command=cmd,
+        tk.Label(depth_row, text="150 cm", bg=CARD_BG,
+                 fg=TEXT_DIM, font=("Helvetica", 8)).pack(side="right")
+
+        # Show selected target depth live
+        self.target_depth_label = tk.Label(
+            mode_card, text="Target: 100.0 cm",
+            bg=CARD_BG, fg=GOLD,
+            font=("Helvetica", 9, "bold"), anchor="center",
         )
-        cb.pack(side=side)
+        self.target_depth_label.pack(pady=(0, 8))
+        self.target_x_val.trace_add("write", self._update_target_label)
+
+        tk.Frame(parent, bg=BORDER_COL, height=1).pack(fill="x", **px)
+
+        # ── ILLUMINATION card ────────────────────────────────────────────────
+        self._section_label(parent, "💡  ILLUMINATION")
+
+        light_card = tk.Frame(parent, bg=CARD_BG, bd=0)
+        light_card.pack(fill="x", **px, pady=(4, 8))
+
+        light_row = tk.Frame(light_card, bg=CARD_BG)
+        light_row.pack(fill="x", padx=10, pady=(8, 8))
+
+        tk.Label(light_row, text="Dim", bg=CARD_BG,
+                 fg=TEXT_DIM, font=("Helvetica", 8)).pack(side="left")
+
+        self.light_slider = tk.Scale(
+            light_row, variable=self.light_val,
+            from_=0.1, to=2.5, resolution=0.05, orient="horizontal",
+            bg=CARD_BG, fg=GOLD, troughcolor=BORDER_COL,
+            highlightthickness=0, bd=0, showvalue=False,
+            activebackground=GOLD_BRIGHT,
+        )
+        self.light_slider.pack(side="left", fill="x", expand=True)
+
+        tk.Label(light_row, text="Bright", bg=CARD_BG,
+                 fg=TEXT_DIM, font=("Helvetica", 8)).pack(side="right")
+
+        tk.Frame(parent, bg=BORDER_COL, height=1).pack(fill="x", **px)
+
+        # ── KEYBOARD CONTROLS legend ──────────────────────────────────────────
+        self._section_label(parent, "⌨  KEYBOARD CONTROLS")
+
+        keys_card = tk.Frame(parent, bg=CARD_BG, bd=0)
+        keys_card.pack(fill="x", **px, pady=(4, 12))
+
+        controls = [
+            ("W",     "Advance scope deeper"),
+            ("S",     "Withdraw scope"),
+            ("A / D", "Steer left / right"),
+            ("R / F", "Bend upward / downward"),
+            ("Q / E", "Rotate tip (twist)"),
+            ("Z / X", "Shift scope UP / DOWN"),
+            ("T",     "Jump to preset position"),
+        ]
+        for key, desc in controls:
+            row = tk.Frame(keys_card, bg=CARD_BG)
+            row.pack(fill="x", padx=10, pady=2)
+            tk.Label(
+                row, text=key,
+                bg="#182030", fg=GOLD_BRIGHT,
+                font=("Courier", 9, "bold"),
+                width=7, anchor="center",
+                relief="flat", padx=4, pady=2,
+            ).pack(side="left")
+            tk.Label(
+                row, text=desc,
+                bg=CARD_BG, fg=TEXT_MAIN,
+                font=("Helvetica", 9), anchor="w",
+            ).pack(side="left", padx=(8, 0))
+
+        # small bottom padding
+        tk.Frame(parent, bg=PANEL_BG, height=4).pack(fill="x")
+
+    # ── Small helpers ─────────────────────────────────────────────────────────
+
+    def _section_label(self, parent, text: str):
+        tk.Label(
+            parent, text=text,
+            bg=PANEL_BG, fg=TEXT_MUTED,
+            font=("Helvetica", 8, "bold"),
+            anchor="w",
+        ).pack(fill="x", padx=14, pady=(10, 2))
+
+    def _update_target_label(self, *_):
+        cm = self.target_x_val.get() * 100
+        self.target_depth_label.config(text=f"Target: {cm:.0f} cm")
 
     # ── Event callbacks ────────────────────────────────────────────────────────
 
     def _on_auto_toggle(self):
         if self.auto_enabled.get():
-            # Fetch the user's requested depth from the slider
             user_target = self.target_x_val.get()
-            
-            # Pass it directly to the AutoPilot
             self.pilot.reset(goal_x=user_target)
             self.guard.reset()
             print(f"[AUTO] Autopilot engaged – advancing to {user_target:.2f}m.")
@@ -326,43 +473,38 @@ class SmartDashboardGUI:
             print("[AUTO] Autopilot disengaged – returning to manual control.")
 
     def _on_key(self, event):
-        """Handle keyboard input for 7-DOF."""
-        print(f"[DEBUG] Key physically pressed: '{event.char}'")  # <--- NEW
-        
-        if self.auto_enabled.get(): 
-            print("[DEBUG] Ignored! Dashboard is in AUTO mode.")  # <--- NEW
-            return 
-            
-        key = event.char.lower()
-        print(f"[DEBUG] Processing key: '{key}'")                 # <--- NEW
-        
-        d_theta = [0.0] * 7 
-        # ... (rest of the code stays exactly the same) 
+        print(f"[DEBUG] Key pressed: '{event.char}'")
 
-        # Lowered insertion speed
-        if key == 'w': d_theta[0] = +0.005
-        elif key == 's': d_theta[0] = -0.005
-        
-        # Yaw (Left/Right) - Reduced by half
-        elif key == 'a': 
-            d_theta[1], d_theta[3], d_theta[5] = 0.01, 0.015, 0.025
-        elif key == 'd': 
-            d_theta[1], d_theta[3], d_theta[5] = -0.01, -0.015, -0.025
-            
-        # Pitch (Up/Down) - Reduced by half
-        elif key == 'r': 
-            d_theta[2], d_theta[4] = 0.015, 0.025
-        elif key == 'f': 
-            d_theta[2], d_theta[4] = -0.015, -0.025
-            
-        # Distal Roll (Twist Tip)
-        elif key == 'q': d_theta[6] = +0.03
-        elif key == 'e': d_theta[6] = -0.03
-        
+        if self.auto_enabled.get():
+            print("[DEBUG] In AUTO mode — keyboard ignored.")
+            return
+
+        key = event.char.lower()
+        d_theta = [0.0] * 8   # 8 DOF: vertical + 7 arm joints
+
+        if   key == 'w': d_theta[1] = +0.005    # insertion (index 1)
+        elif key == 's': d_theta[1] = -0.005
+        elif key == 'a':
+            d_theta[2], d_theta[4], d_theta[6] = 0.01, 0.015, 0.025   # yaw joints
+        elif key == 'd':
+            d_theta[2], d_theta[4], d_theta[6] = -0.01, -0.015, -0.025
+        elif key == 'r':
+            d_theta[3], d_theta[5] = 0.015, 0.025    # pitch joints
+        elif key == 'f':
+            d_theta[3], d_theta[5] = -0.015, -0.025
+        elif key == 'q': d_theta[7] = +0.03      # distal roll (index 7)
+        elif key == 'e': d_theta[7] = -0.03
+        elif key == 'z':
+            # Raise entire arm in world Z — only vertical_joint (index 0)
+            d_theta[0] = +VERTICAL_STEP
+        elif key == 'x':
+            # Lower entire arm in world Z — only vertical_joint (index 0)
+            d_theta[0] = -VERTICAL_STEP
         elif key == 't':
             self._run_ik()
             return
-        else: return
+        else:
+            return
 
         frame = self.node.latest_frame
         self.state = self.guard.filter_command(self.state, d_theta, frame=frame)
@@ -370,18 +512,19 @@ class SmartDashboardGUI:
         self.node.publish_joints(self.state)
 
     def _run_ik(self):
-        """Chapter 6 IK to a hard-coded target (keyboard 'T')."""
+        """IK to a hard-coded target (keyboard 'T'). Vertical joint is preserved."""
         T_sd = np.array([
             [ 0.877, -0.479, 0.0, 0.800],
             [ 0.479,  0.877, 0.0, 0.150],
             [ 0.0,    0.0,   1.0, 0.000],
             [ 0.0,    0.0,   0.0, 1.000],
         ])
-        # Pass the 7-element list as the guess
-        new_theta, converged = self.kin.ik_body(T_sd, self.state.as_list)
+        arm_guess = self.state.as_list[1:]   # 7 arm joints only
+        new_arm, converged = self.kin.ik_body(T_sd, arm_guess)
         if converged:
-            self.state = RobotState(*new_theta).clipped()
-            print(f"[IK] Converged  → {new_theta}")
+            # Keep the current vertical position; only update arm joints
+            self.state = RobotState(self.state.vertical, *new_arm).clipped()
+            print(f"[IK] Converged → {new_arm}")
         else:
             print("[IK] Failed to converge.")
         self._update_kinematics()
@@ -390,110 +533,111 @@ class SmartDashboardGUI:
     # ── Kinematics update ─────────────────────────────────────────────────────
 
     def _update_kinematics(self):
-        th = self.state.as_list
-        T1 = self.kin.matrix_exp_6(self.kin.S1, th[0])
-        T2 = self.kin.matrix_exp_6(self.kin.S2, th[1])
-        T3 = self.kin.matrix_exp_6(self.kin.S3, th[2])
-        T4 = self.kin.matrix_exp_6(self.kin.S4, th[3])
+        # vertical_joint is index 0 — slice it off; BronchoKinematics expects 7 arm joints
+        arm_thetas = self.state.as_list[1:]
+
+        T1 = self.kin.matrix_exp_6(self.kin.S1, arm_thetas[0])
+        T2 = self.kin.matrix_exp_6(self.kin.S2, arm_thetas[1])
+        T3 = self.kin.matrix_exp_6(self.kin.S3, arm_thetas[2])
+        T4 = self.kin.matrix_exp_6(self.kin.S4, arm_thetas[3])
         T_final = np.dot(np.dot(np.dot(T1, T2), T3), T4).dot(self.kin.M)
 
         self.tip_position = T_final[:3, 3]
-        Js = self.kin.jacobian_space(th)
-        self.ellipsoids   = self.kin.ellipsoid_analysis(Js)
+        Js = self.kin.jacobian_space(arm_thetas)
+        self.ellipsoids = self.kin.ellipsoid_analysis(Js)
 
-        # Update telemetry labels
+        # Insertion depth in centimetres
+        self.depth_label.config(
+            text=depth_cm(self.state.insertion),
+        )
+
+        # Tip X/Y/Z
         p = self.tip_position
         self.pos_label.config(
-            text=f"X: {p[0]:+.3f}   Y: {p[1]:+.3f}   Z: {p[2]:+.3f}"
-        )
-        s = self.state
-        self.joint_label.config(
-            text=f"I {s.insertion:+.2f} | P y{s.prox_yaw:+.2f} p{s.prox_pitch:+.2f} | "
-                 f"M y{s.mid_yaw:+.2f} p{s.mid_pitch:+.2f} | D y{s.dist_yaw:+.2f} r{s.dist_roll:+.2f}"
-        )
-        el = self.ellipsoids
-        vol  = el['linear']['mu3']
-        cond = el['linear']['mu1']
-        cond_str = "SING" if cond == float('inf') else f"{cond:.2f}"
-        self.manip_label.config(
-            text=f"VOL {vol:.4f}   COND {cond_str}",
-            fg=RED_ALERT if cond == float('inf') else TEXT_MAIN,
+            text=f"{p[0]:+.3f}  /  {p[1]:+.3f}  /  {p[2]:+.3f}  m"
         )
 
+        # Manoeuvrability in plain language
+        el   = self.ellipsoids
+        cond = el['linear']['mu1']
+        if cond == float('inf'):
+            manip_text, manip_col = "Limited — near boundary", CAUTION_AMBER
+        elif cond > 50:
+            manip_text, manip_col = "Reduced", CAUTION_AMBER
+        else:
+            manip_text, manip_col = "Good", SAFE_GREEN
+        self.manip_label.config(text=manip_text, fg=manip_col)
     # ── HUD overlay on camera frame ───────────────────────────────────────────
 
     def _draw_hud(self, frame: np.ndarray) -> np.ndarray:
         h, w = frame.shape[:2]
         cx, cy = w // 2, h // 2
 
-        # Crosshair
-        cv2.line(frame, (cx - 22, cy), (cx + 22, cy), (0, 210, 80), 1)
-        cv2.line(frame, (cx, cy - 22), (cx, cy + 22), (0, 210, 80), 1)
-        cv2.circle(frame, (cx, cy), 5, (0, 210, 80), 1)
+        # ── Crosshair (surgical green) ────────────────────────────────────────
+        cv2.line(frame, (cx - 20, cy), (cx + 20, cy), (0, 200, 80), 1)
+        cv2.line(frame, (cx, cy - 20), (cx, cy + 20), (0, 200, 80), 1)
+        cv2.circle(frame, (cx, cy), 4, (0, 200, 80), 1)
 
-        # Corner reticle brackets
-        blen, boff = 18, 3
+        # ── Corner orientation brackets ───────────────────────────────────────
+        blen = 16
         for sx, sy in [(-1, -1), (1, -1), (-1, 1), (1, 1)]:
             ox = cx + sx * (w // 4)
             oy = cy + sy * (h // 4)
-            cv2.line(frame, (ox, oy), (ox + sx * blen, oy), (50, 180, 255), 1)
-            cv2.line(frame, (ox, oy), (ox, oy + sy * blen), (50, 180, 255), 1)
+            cv2.line(frame, (ox, oy), (ox + sx * blen, oy), (60, 180, 255), 1)
+            cv2.line(frame, (ox, oy), (ox, oy + sy * blen), (60, 180, 255), 1)
 
-        # Bottom telemetry bar
-        s   = self.state
-        el  = self.ellipsoids
-        if el:
-            vol  = el['linear']['mu3']
-            cond = el['linear']['mu1']
-            cond_str = "SING!" if cond == float('inf') else f"{cond:.2f}"
-            singular = (cond == float('inf'))
+        # ── Bottom status bar ────────────────────────────────────────────────
+        s  = self.state
+        el = self.ellipsoids
+
+        dist = self.guard_dist
+        if dist < GUARD_WALL_THRESHOLD * 0.5:
+            safety_str = "⚠ WALL NEAR"
+            bar_col_cv = (0, 60, 240)
+        elif dist < GUARD_WALL_THRESHOLD:
+            safety_str = "▲ CAUTION"
+            bar_col_cv = (0, 180, 220)
         else:
-            vol, cond_str, singular = 0.0, "N/A", False
+            safety_str = "✔ CLEAR"
+            bar_col_cv = (0, 200, 80)
 
-        mode_str = "AUTO" if self.auto_enabled.get() else "MANU"
+        mode_str = "AUTO" if self.auto_enabled.get() else "MANUAL"
+
         tele = (
-            f"{mode_str} | "
-            f"INS {s.insertion:+.2f}m | "
-            f"P(y{s.prox_yaw:+.2f},p{s.prox_pitch:+.2f}) "
-            f"M(y{s.mid_yaw:+.2f},p{s.mid_pitch:+.2f}) "
-            f"D(y{s.dist_yaw:+.2f},r{s.dist_roll:+.2f}) | "
-            f"V {vol:.3f} C {cond_str}"
+            f"{mode_str}  |  "
+            f"Depth {depth_cm(s.insertion)}  |  "
+            f"Safety: {safety_str}"
         )
 
         bar_y = h - STATUS_BAR_H
-        cv2.rectangle(frame, (0, bar_y), (w, h), (10, 14, 20), -1)
-        text_col = (0, 80, 240) if singular else (20, 220, 140)
-        cv2.putText(frame, tele, (8, h - 9),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, text_col, 1,
+        cv2.rectangle(frame, (0, bar_y), (w, h), (8, 12, 20), -1)
+        cv2.putText(frame, tele, (10, h - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.46, (200, 215, 230), 1,
                     cv2.LINE_AA)
 
-        # Guard distance bar (left edge)
-        dist = self.guard_dist
+        # ── Left edge: wall clearance bar ────────────────────────────────────
+        bar_full = h - STATUS_BAR_H - 14
         bar_frac = np.clip(dist / 0.5, 0.0, 1.0)
-        bar_full  = h - STATUS_BAR_H - 10
-        bar_pix   = int(bar_frac * bar_full)
-        bar_col   = (0, 220, 80) if dist >= GUARD_WALL_THRESHOLD else (
-                    (0, 200, 255) if dist >= GUARD_WALL_THRESHOLD * 0.5
-                    else (0, 60, 255))
+        bar_pix  = int(bar_frac * bar_full)
         cv2.rectangle(frame, (4, h - STATUS_BAR_H - 10 - bar_pix),
-                      (10, h - STATUS_BAR_H - 10), bar_col, -1)
+                      (10, h - STATUS_BAR_H - 10), bar_col_cv, -1)
         cv2.rectangle(frame, (4, 10), (10, h - STATUS_BAR_H - 10),
-                      (30, 40, 50), 1)
-        cv2.putText(frame, "GRD", (2, h - STATUS_BAR_H - 14),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.30, (80, 80, 80), 1)
+                      (30, 42, 55), 1)
+        cv2.putText(frame, "SAFE", (0, h - STATUS_BAR_H - 14),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.28, (80, 90, 100), 1)
 
-        # AUTO goal progress bar (right edge)
+        # ── Right edge: progress bar (AUTO only) ──────────────────────────────
         if self.auto_enabled.get():
             progress = np.clip(s.insertion / self.pilot.goal_x, 0.0, 1.0)
             prog_pix = int(progress * bar_full)
             cv2.rectangle(frame,
                           (w - 10, h - STATUS_BAR_H - 10 - prog_pix),
                           (w - 4,  h - STATUS_BAR_H - 10),
-                          (20, 160, 255), -1)   
+                          (20, 160, 255), -1)
             cv2.rectangle(frame, (w - 10, 10), (w - 4, h - STATUS_BAR_H - 10),
-                          (30, 40, 50), 1)
-            cv2.putText(frame, "FWD", (w - 13, h - STATUS_BAR_H - 14),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.30, (80, 80, 80), 1)
+                          (30, 42, 55), 1)
+            cv2.putText(frame, "PROG", (w - 15, h - STATUS_BAR_H - 14),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.28, (80, 90, 100), 1)
 
         return frame
 
@@ -505,7 +649,7 @@ class SmartDashboardGUI:
 
         frame = self.node.latest_frame
 
-        # 2. Proximity sensing (used by both guard and auto)
+        # 2. Proximity sensing
         if frame is not None:
             dist, normal, margin = estimate_wall_proximity(
                 frame, self.tip_position[:2]
@@ -520,19 +664,16 @@ class SmartDashboardGUI:
             self._update_kinematics()
             self.node.publish_joints(self.state)
 
-        # 4. Guard & auto status labels
-        self.guard_label.config(
-            text=guard_status_text(self.guard_dist, self.guard_margin),
-            fg=(RED_ALERT if self.guard_dist < GUARD_WALL_THRESHOLD * 0.5
-                else YELLOW_WARN if self.guard_dist < GUARD_WALL_THRESHOLD
-                else GREEN_OK),
-        )
-        auto_txt = (auto_status_text(self.pilot, self.state)
-                    if self.auto_enabled.get() else "AUTO  –")
-        auto_col = (AMBER if self.auto_enabled.get() else TEXT_DIM)
-        self.auto_label.config(text=auto_txt, fg=auto_col)
+        # 4. Safety & navigation labels (plain English)
+        guard_txt, guard_col = proximity_label(self.guard_dist)
+        self.guard_label.config(text=guard_txt, fg=guard_col)
 
-        # 5. Render frame
+        nav_txt, nav_col = navigation_status(
+            self.auto_enabled.get(), self.pilot, self.state
+        )
+        self.auto_label.config(text=nav_txt, fg=nav_col)
+
+        # 5. Render camera frame
         if frame is not None:
             frame = cv2.convertScaleAbs(
                 frame, alpha=self.light_val.get(), beta=0
@@ -545,20 +686,26 @@ class SmartDashboardGUI:
             img   = PILImage.fromarray(rgb)
             imgtk = ImageTk.PhotoImage(image=img)
             self.canvas.create_image(0, 0, anchor="nw", image=imgtk)
-            self.canvas.imgtk = imgtk  # keep reference
+            self.canvas.imgtk = imgtk
 
-        # 6. Status bar
-        mode    = "AUTO" if self.auto_enabled.get() else "MANUAL"
-        ai_str  = "AI ON" if self.ai_enabled.get() else "AI OFF"
-        sb_col  = AMBER if self.auto_enabled.get() else CYAN_DIM
+        # 6. Bottom status bar
+        mode   = "AUTO-NAVIGATE" if self.auto_enabled.get() else "MANUAL CONTROL"
+        ai_str = "AI Vision ON" if self.ai_enabled.get() else "AI Vision OFF"
+        depth  = depth_cm(self.tip_position[0])
+        vert   = f"{self.state.vertical * 100:+.1f} cm"
+        sb_col = GOLD if self.auto_enabled.get() else INFO_BLUE
+        _, safety_col = proximity_label(self.guard_dist)
         self.status_bar.config(
-            text=f"  MODE: {mode}  |  {ai_str}  |  "
-                 f"GUARD dist={self.guard_dist:.3f}m  |  "
-                 f"TIP X={self.tip_position[0]:.3f}m",
+            text=f"  {mode}  ·  {ai_str}  ·  Depth: {depth}  ·  "
+                 f"Arm height: {vert}  ·  Wall clearance: {self.guard_dist * 100:.1f} cm",
             fg=sb_col,
         )
 
-        # Re-schedule: ~30 fps in manual, ~15 fps in auto (heavier computation)
+        # 7. Camera live indicator
+        dot_col = SAFE_GREEN if frame is not None else DANGER_RED
+        dot_txt = "●  LIVE" if frame is not None else "●  NO SIGNAL"
+        self.cam_status_dot.config(fg=dot_col, text=dot_txt)
+
         delay = 66 if self.auto_enabled.get() else 33
         self.root.after(delay, self._update_loop)
 
